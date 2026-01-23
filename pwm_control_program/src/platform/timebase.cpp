@@ -2,26 +2,57 @@
 
 #include "platform/timebase.hpp"
 
+#include <atomic>
+#include <chrono>
+
 namespace rovctrl::platform::timebase {
 
 // -------------------------
-// 基础时间接口
+// Est offset（全局）
+// -------------------------
+//
+// 最小实现：EstNS = MonoNS + offset
+// 注意：offset 允许在运行时被设置。若你担心并发读写，使用 atomic。
+static std::atomic<int64_t> g_est_offset_ns{0};
+
+// -------------------------
+// 1) 基础时间接口：Mono（steady_clock）
 // -------------------------
 
-int64_t now_ns() noexcept
+int64_t now_mono_ns() noexcept
 {
-    auto tp = Clock::now().time_since_epoch();
-    auto ns = std::chrono::duration_cast<std::chrono::nanoseconds>(tp);
+    const auto tp = Clock::now().time_since_epoch();
+    const auto ns = std::chrono::duration_cast<std::chrono::nanoseconds>(tp);
     return ns.count();
 }
 
-TimePoint now() noexcept
+TimePoint now_mono() noexcept
 {
     return Clock::now();
 }
 
 // -------------------------
-// 默认延迟配置（全局静态）
+// 2) Est 时间接口
+// -------------------------
+
+int64_t est_offset_ns() noexcept
+{
+    return g_est_offset_ns.load(std::memory_order_relaxed);
+}
+
+void set_est_offset_ns(int64_t offset_ns) noexcept
+{
+    g_est_offset_ns.store(offset_ns, std::memory_order_relaxed);
+}
+
+int64_t now_est_ns() noexcept
+{
+    // 用 mono + offset 构造 Est 时间轴
+    return now_mono_ns() + est_offset_ns();
+}
+
+// -------------------------
+// 3) 默认延迟配置（全局静态）
 // -------------------------
 
 static LatencyDefaults g_latency_defaults{};
@@ -31,7 +62,6 @@ LatencyDefaults& latency_defaults() noexcept
     return g_latency_defaults;
 }
 
-// 内部工具：根据事件类型返回默认延迟（纳秒）
 static int64_t default_latency_for(SensorKind kind) noexcept
 {
     const auto& d = g_latency_defaults;
@@ -49,7 +79,7 @@ static int64_t default_latency_for(SensorKind kind) noexcept
 }
 
 // -------------------------
-// stamp(): 统一时间戳核心方法
+// 4) stamp(): 统一时间戳核心方法
 // -------------------------
 
 Stamp stamp(const std::string&        sensor_id,
@@ -58,23 +88,30 @@ Stamp stamp(const std::string&        sensor_id,
             std::optional<int64_t>    latency_ns)
 {
     Stamp s;
-    s.sensor_id    = sensor_id;
-    s.kind         = kind;
-    s.host_time_ns = now_ns();
+    s.sensor_id = sensor_id;
+    s.kind      = kind;
 
-    // 1) 选择延迟：参数优先，否则使用默认值
+    // 1) 采样时刻（Mono + Est）
+    s.mono_ns    = now_mono_ns();                // MonoNS
+    s.raw_est_ns = s.mono_ns + est_offset_ns();  // EstNS (uncorrected)
+
+    // 2) 延迟选择：参数优先，否则默认
     const int64_t used_latency_ns =
         latency_ns.has_value() ? *latency_ns : default_latency_for(kind);
     s.latency_ns = used_latency_ns;
 
-    // 2) 选择“基准时间”：有 sensor_time_ns 用传感器时间，否则用 host_time_ns
-    const int64_t base_time_ns =
-        sensor_time_ns.has_value() ? *sensor_time_ns : s.host_time_ns;
-    s.sensor_time_ns    = sensor_time_ns;
-    s.corrected_time_ns = base_time_ns - used_latency_ns;
+    // 3) 保存设备时间（如有）
+    s.sensor_time_ns = sensor_time_ns;
 
-    // 以后如果要做更复杂的“时钟对齐”（比如 IMU/DVL 时间轴对齐），
-    // 可以在这里扩展对 base_time_ns 的计算逻辑。
+    // 4) 选择 base_est_ns 并做延迟补偿
+    //
+    // 最小实现：base_est_ns = raw_est_ns
+    // 未来扩展点：若 sensor_time_ns 有值，可在此做 sensor->est 对齐映射：
+    //   aligned_est_ns = align(sensor_id, *sensor_time_ns, s.raw_est_ns, ...)
+    //   base_est_ns = aligned_est_ns
+    const int64_t base_est_ns = s.raw_est_ns;
+
+    s.corrected_est_ns = base_est_ns - used_latency_ns;
 
     return s;
 }

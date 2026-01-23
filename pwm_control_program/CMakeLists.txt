@@ -178,7 +178,7 @@ set(SRC_CONTROL_CORE
 
     src/control_core/loop/control_loop_run.cpp
     src/control_core/loop/control_loop_nav.cpp
-    src/control_core/loop/control_loop_pwm_log.cpp
+    src/control_core/loop/control_loop_log.cpp
     src/control_core/loop/control_loop_helpers.cpp
 )
 
@@ -203,6 +203,7 @@ set(SRC_IO_BASE
     src/io/input/multi_input_provider.cpp
 
     src/io/log/pwm_logger.cpp
+    src/io/log/control_loop_logger.cpp
 
     # RouteB can still include a telemetry adapter (for outgoing telemetry)
     

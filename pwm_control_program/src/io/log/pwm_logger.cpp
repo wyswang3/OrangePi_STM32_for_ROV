@@ -1,3 +1,5 @@
+// pwm_logger.cpp
+
 #include <fstream>      // 必须放第一：避免被项目头文件宏污染
 #include <cmath>
 #include <ctime>
@@ -6,6 +8,7 @@
 #include <iostream>
 #include <sstream>
 
+#include "platform/timebase.hpp"
 #include "io/log/pwm_logger.hpp"
 
 namespace fs = std::filesystem;
@@ -15,6 +18,10 @@ namespace rovctrl::io {
 struct PwmLogger::Impl {
     std::ofstream ofs;
     Mode mode{Mode::CmdAndApplied};
+
+    // 是否保留 legacy t_s（调用方传入的秒时间）用于对照
+    // 若打开，需要同时修改 header 与每行写入逻辑
+    static constexpr bool kWriteLegacyTs = false;
 
     // 将归一化指令 u ∈ [-1, 1] 映射到占空比百分制 duty ∈ [5, 10]
     // 与 PwmClient::setTargets 里的映射保持一致：
@@ -61,12 +68,17 @@ struct PwmLogger::Impl {
     {
         if (!ofs.is_open()) return;
 
-        ofs << "t_s";
+        // 统一时间戳列：Mono/Est 两条时间轴 + NS/S 两种表示
+        ofs << "MonoNS,EstNS,MonoS,EstS";
+        if constexpr (kWriteLegacyTs) {
+            ofs << ",t_s_legacy";
+        }
+
         if (mode == Mode::AppliedOnly) {
-            for (int i = 1; i <= 8; ++i) ofs << ",ch" << i;           // 占空比[%]
+            for (int i = 1; i <= 8; ++i) ofs << ",ch" << i;  // duty[%]
         } else {
-            for (int i = 1; i <= 8; ++i) ofs << ",ch" << i << "_cmd"; // 指令[%]
-            for (int i = 1; i <= 8; ++i) ofs << ",ch" << i << "_applied"; // 实际[%]
+            for (int i = 1; i <= 8; ++i) ofs << ",ch" << i << "_cmd";
+            for (int i = 1; i <= 8; ++i) ofs << ",ch" << i << "_applied";
         }
         ofs << "\n";
         ofs.flush();
@@ -75,6 +87,21 @@ struct PwmLogger::Impl {
     static void write_nan_(std::ofstream& ofs, int n)
     {
         for (int i = 0; i < n; ++i) ofs << ",nan";
+    }
+
+    static void write_timebase_(std::ofstream& ofs) noexcept
+    {
+        using rovctrl::platform::timebase::SensorKind;
+        using rovctrl::platform::timebase::stamp;
+
+        // PWM 记录建议归为 CONTROL_LOOP（便于统一配置默认延迟）
+        const auto st = stamp("pwm", SensorKind::CONTROL_LOOP);
+
+        // EstNS/EstS 采用 corrected_est（默认 control_loop_ns=0 时等价 raw_est）
+        ofs << st.mono_ns
+            << "," << st.corrected_est_ns
+            << "," << st.mono_s()
+            << "," << st.corrected_est_s();
     }
 };
 
@@ -138,7 +165,12 @@ void PwmLogger::logApplied(double t_s, const std::array<float, 8>& applied)
     if (!is_open()) return;
 
     auto& ofs = impl_->ofs;
-    ofs << t_s;
+
+    // 写统一时间戳
+    Impl::write_timebase_(ofs);
+    if constexpr (Impl::kWriteLegacyTs) {
+        ofs << "," << t_s;
+    }
 
     if (impl_->mode == Mode::AppliedOnly) {
         for (float v : applied) {
@@ -169,7 +201,12 @@ void PwmLogger::logCmdAndApplied(double t_s,
     }
 
     auto& ofs = impl_->ofs;
-    ofs << t_s;
+
+    // 写统一时间戳
+    Impl::write_timebase_(ofs);
+    if constexpr (Impl::kWriteLegacyTs) {
+        ofs << "," << t_s;
+    }
 
     // cmd: 归一化 [-1,1] → duty[%]
     for (float v : cmd) {

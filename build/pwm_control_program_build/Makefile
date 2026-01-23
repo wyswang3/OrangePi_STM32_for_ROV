@@ -260,6 +260,33 @@ src/control_core/loop/control_loop_helpers.cpp.s:
 	cd /home/wys/orangepi/UnderwaterRobotSystem/OrangePi_STM32_for_ROV/build && $(MAKE) -f pwm_control_program_build/CMakeFiles/pwm_control_program.dir/build.make pwm_control_program_build/CMakeFiles/pwm_control_program.dir/src/control_core/loop/control_loop_helpers.cpp.s
 .PHONY : src/control_core/loop/control_loop_helpers.cpp.s
 
+src/control_core/loop/control_loop_log.o: src/control_core/loop/control_loop_log.cpp.o
+
+.PHONY : src/control_core/loop/control_loop_log.o
+
+# target to build an object file
+src/control_core/loop/control_loop_log.cpp.o:
+	cd /home/wys/orangepi/UnderwaterRobotSystem/OrangePi_STM32_for_ROV/build && $(MAKE) -f pwm_control_program_build/CMakeFiles/pwm_control_program.dir/build.make pwm_control_program_build/CMakeFiles/pwm_control_program.dir/src/control_core/loop/control_loop_log.cpp.o
+.PHONY : src/control_core/loop/control_loop_log.cpp.o
+
+src/control_core/loop/control_loop_log.i: src/control_core/loop/control_loop_log.cpp.i
+
+.PHONY : src/control_core/loop/control_loop_log.i
+
+# target to preprocess a source file
+src/control_core/loop/control_loop_log.cpp.i:
+	cd /home/wys/orangepi/UnderwaterRobotSystem/OrangePi_STM32_for_ROV/build && $(MAKE) -f pwm_control_program_build/CMakeFiles/pwm_control_program.dir/build.make pwm_control_program_build/CMakeFiles/pwm_control_program.dir/src/control_core/loop/control_loop_log.cpp.i
+.PHONY : src/control_core/loop/control_loop_log.cpp.i
+
+src/control_core/loop/control_loop_log.s: src/control_core/loop/control_loop_log.cpp.s
+
+.PHONY : src/control_core/loop/control_loop_log.s
+
+# target to generate assembly for a file
+src/control_core/loop/control_loop_log.cpp.s:
+	cd /home/wys/orangepi/UnderwaterRobotSystem/OrangePi_STM32_for_ROV/build && $(MAKE) -f pwm_control_program_build/CMakeFiles/pwm_control_program.dir/build.make pwm_control_program_build/CMakeFiles/pwm_control_program.dir/src/control_core/loop/control_loop_log.cpp.s
+.PHONY : src/control_core/loop/control_loop_log.cpp.s
+
 src/control_core/loop/control_loop_nav.o: src/control_core/loop/control_loop_nav.cpp.o
 
 .PHONY : src/control_core/loop/control_loop_nav.o
@@ -286,33 +313,6 @@ src/control_core/loop/control_loop_nav.s: src/control_core/loop/control_loop_nav
 src/control_core/loop/control_loop_nav.cpp.s:
 	cd /home/wys/orangepi/UnderwaterRobotSystem/OrangePi_STM32_for_ROV/build && $(MAKE) -f pwm_control_program_build/CMakeFiles/pwm_control_program.dir/build.make pwm_control_program_build/CMakeFiles/pwm_control_program.dir/src/control_core/loop/control_loop_nav.cpp.s
 .PHONY : src/control_core/loop/control_loop_nav.cpp.s
-
-src/control_core/loop/control_loop_pwm_log.o: src/control_core/loop/control_loop_pwm_log.cpp.o
-
-.PHONY : src/control_core/loop/control_loop_pwm_log.o
-
-# target to build an object file
-src/control_core/loop/control_loop_pwm_log.cpp.o:
-	cd /home/wys/orangepi/UnderwaterRobotSystem/OrangePi_STM32_for_ROV/build && $(MAKE) -f pwm_control_program_build/CMakeFiles/pwm_control_program.dir/build.make pwm_control_program_build/CMakeFiles/pwm_control_program.dir/src/control_core/loop/control_loop_pwm_log.cpp.o
-.PHONY : src/control_core/loop/control_loop_pwm_log.cpp.o
-
-src/control_core/loop/control_loop_pwm_log.i: src/control_core/loop/control_loop_pwm_log.cpp.i
-
-.PHONY : src/control_core/loop/control_loop_pwm_log.i
-
-# target to preprocess a source file
-src/control_core/loop/control_loop_pwm_log.cpp.i:
-	cd /home/wys/orangepi/UnderwaterRobotSystem/OrangePi_STM32_for_ROV/build && $(MAKE) -f pwm_control_program_build/CMakeFiles/pwm_control_program.dir/build.make pwm_control_program_build/CMakeFiles/pwm_control_program.dir/src/control_core/loop/control_loop_pwm_log.cpp.i
-.PHONY : src/control_core/loop/control_loop_pwm_log.cpp.i
-
-src/control_core/loop/control_loop_pwm_log.s: src/control_core/loop/control_loop_pwm_log.cpp.s
-
-.PHONY : src/control_core/loop/control_loop_pwm_log.s
-
-# target to generate assembly for a file
-src/control_core/loop/control_loop_pwm_log.cpp.s:
-	cd /home/wys/orangepi/UnderwaterRobotSystem/OrangePi_STM32_for_ROV/build && $(MAKE) -f pwm_control_program_build/CMakeFiles/pwm_control_program.dir/build.make pwm_control_program_build/CMakeFiles/pwm_control_program.dir/src/control_core/loop/control_loop_pwm_log.cpp.s
-.PHONY : src/control_core/loop/control_loop_pwm_log.cpp.s
 
 src/control_core/loop/control_loop_run.o: src/control_core/loop/control_loop_run.cpp.o
 
@@ -692,6 +692,33 @@ src/io/input/teleop_input.cpp.s:
 	cd /home/wys/orangepi/UnderwaterRobotSystem/OrangePi_STM32_for_ROV/build && $(MAKE) -f pwm_control_program_build/CMakeFiles/pwm_control_program.dir/build.make pwm_control_program_build/CMakeFiles/pwm_control_program.dir/src/io/input/teleop_input.cpp.s
 .PHONY : src/io/input/teleop_input.cpp.s
 
+src/io/log/control_loop_logger.o: src/io/log/control_loop_logger.cpp.o
+
+.PHONY : src/io/log/control_loop_logger.o
+
+# target to build an object file
+src/io/log/control_loop_logger.cpp.o:
+	cd /home/wys/orangepi/UnderwaterRobotSystem/OrangePi_STM32_for_ROV/build && $(MAKE) -f pwm_control_program_build/CMakeFiles/pwm_control_program.dir/build.make pwm_control_program_build/CMakeFiles/pwm_control_program.dir/src/io/log/control_loop_logger.cpp.o
+.PHONY : src/io/log/control_loop_logger.cpp.o
+
+src/io/log/control_loop_logger.i: src/io/log/control_loop_logger.cpp.i
+
+.PHONY : src/io/log/control_loop_logger.i
+
+# target to preprocess a source file
+src/io/log/control_loop_logger.cpp.i:
+	cd /home/wys/orangepi/UnderwaterRobotSystem/OrangePi_STM32_for_ROV/build && $(MAKE) -f pwm_control_program_build/CMakeFiles/pwm_control_program.dir/build.make pwm_control_program_build/CMakeFiles/pwm_control_program.dir/src/io/log/control_loop_logger.cpp.i
+.PHONY : src/io/log/control_loop_logger.cpp.i
+
+src/io/log/control_loop_logger.s: src/io/log/control_loop_logger.cpp.s
+
+.PHONY : src/io/log/control_loop_logger.s
+
+# target to generate assembly for a file
+src/io/log/control_loop_logger.cpp.s:
+	cd /home/wys/orangepi/UnderwaterRobotSystem/OrangePi_STM32_for_ROV/build && $(MAKE) -f pwm_control_program_build/CMakeFiles/pwm_control_program.dir/build.make pwm_control_program_build/CMakeFiles/pwm_control_program.dir/src/io/log/control_loop_logger.cpp.s
+.PHONY : src/io/log/control_loop_logger.cpp.s
+
 src/io/log/pwm_logger.o: src/io/log/pwm_logger.cpp.o
 
 .PHONY : src/io/log/pwm_logger.o
@@ -1013,12 +1040,12 @@ help:
 	@echo "... src/control_core/loop/control_loop_helpers.o"
 	@echo "... src/control_core/loop/control_loop_helpers.i"
 	@echo "... src/control_core/loop/control_loop_helpers.s"
+	@echo "... src/control_core/loop/control_loop_log.o"
+	@echo "... src/control_core/loop/control_loop_log.i"
+	@echo "... src/control_core/loop/control_loop_log.s"
 	@echo "... src/control_core/loop/control_loop_nav.o"
 	@echo "... src/control_core/loop/control_loop_nav.i"
 	@echo "... src/control_core/loop/control_loop_nav.s"
-	@echo "... src/control_core/loop/control_loop_pwm_log.o"
-	@echo "... src/control_core/loop/control_loop_pwm_log.i"
-	@echo "... src/control_core/loop/control_loop_pwm_log.s"
 	@echo "... src/control_core/loop/control_loop_run.o"
 	@echo "... src/control_core/loop/control_loop_run.i"
 	@echo "... src/control_core/loop/control_loop_run.s"
@@ -1061,6 +1088,9 @@ help:
 	@echo "... src/io/input/teleop_input.o"
 	@echo "... src/io/input/teleop_input.i"
 	@echo "... src/io/input/teleop_input.s"
+	@echo "... src/io/log/control_loop_logger.o"
+	@echo "... src/io/log/control_loop_logger.i"
+	@echo "... src/io/log/control_loop_logger.s"
 	@echo "... src/io/log/pwm_logger.o"
 	@echo "... src/io/log/pwm_logger.i"
 	@echo "... src/io/log/pwm_logger.s"
