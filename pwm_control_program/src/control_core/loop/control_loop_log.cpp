@@ -1,104 +1,102 @@
 /**
  * @file   control_loop_log.cpp
- * @brief  PwmLog PIMPL implementation, now includes ControlLoopLogger integration.
+ * @brief  PwmLog PIMPL implementation + separate ControlLoopLogger (no mixing).
  */
 
 #include "control_core/control_loop.hpp"
 
 #include <array>
+#include <filesystem>
+#include <memory>
 #include <string>
-#include <memory>   // +++
 
-// 日志实现（cpp 内部使用，不透传到头文件）
 #include "io/log/pwm_logger.hpp"
-#include "io/log/control_loop_logger.hpp"  // 引入 ControlLoopLogger
+#include "io/log/control_loop_logger.hpp"
 
 namespace rovctrl::control_core {
 
 namespace {
 
-// PwmLogImpl 现在不仅仅管理 PwmLogger，还管理 ControlLoopLogger
 class PwmLogImpl final : public ControlLoop::PwmLog {
 public:
     bool init(const std::string& root_dir,
               Mode               mode,
               const std::string& prefix) override
     {
+        namespace fs = std::filesystem;
+
         const rovctrl::io::PwmLogger::Mode m =
             (mode == Mode::AppliedOnly) ? rovctrl::io::PwmLogger::Mode::AppliedOnly
                                         : rovctrl::io::PwmLogger::Mode::CmdAndApplied;
 
-        // 初始化 PwmLogger
-        if (!logger_.init(root_dir, m, prefix)) {
+        // 强烈建议：分目录，彻底避免误覆盖/混写
+        const fs::path root(root_dir);
+        const fs::path pwm_dir     = root / "pwm";
+        const fs::path control_dir = root / "control";
+
+        // 1) PWM 日志：prefix 用调用方传入（例如 "pwm"），但落到 pwm/ 子目录
+        if (!pwm_logger_.init(pwm_dir.string(), m, prefix)) {
             return false;
         }
 
-        // 初始化 ControlLoopLogger
-        control_loop_logger_.init(root_dir, prefix);  // 使用相同的路径和前缀
+        // 2) 控制日志：固定前缀，落到 control/ 子目录
+        //    绝对不能用与 PWM 相同的 prefix
+        if (!control_loop_logger_.init(control_dir.string(), "control_loop")) {
+            // PWM 已开，控制日志没开：按你策略决定是否失败
+            // 我建议直接 return false，保证两份日志同时可用
+            pwm_logger_.close();
+            return false;
+        }
 
         return true;
     }
 
     bool is_open() const noexcept override {
-        return logger_.is_open() && control_loop_logger_.is_open();
+        return pwm_logger_.is_open();
+        // 若你希望两份都必须 open 才算 open：
+        // return pwm_logger_.is_open() && control_loop_logger_.is_open();
     }
 
     void logApplied(double t_s,
                     const std::array<float, 8>& applied) override
     {
-        logger_.logApplied(t_s, applied);
-        // PwmLogger 完成之后记录控制回路数据
-        log_control_loop_data(t_s, applied, {}, {});  // 控制指令和状态可以稍后补充
+        // 只记录 PWM
+        pwm_logger_.logApplied(t_s, applied);
     }
 
     void logCmdAndApplied(double t_s,
                           const std::array<float, 8>& cmd,
                           const std::array<float, 8>& applied) override
     {
-        logger_.logCmdAndApplied(t_s, cmd, applied);
-        // 同时记录控制回路数据
-        log_control_loop_data(t_s, applied, cmd, {});  // 控制指令、实际下发值和导航数据稍后补充
+        // 只记录 PWM
+        pwm_logger_.logCmdAndApplied(t_s, cmd, applied);
     }
 
     void close() noexcept override
     {
-        // 关闭 PwmLogger
-        logger_.close();
-        // 关闭 ControlLoopLogger
+        pwm_logger_.close();
         control_loop_logger_.close();
     }
 
-private:
-    // PwmLogger 仍然负责 PWM 日志记录
-    rovctrl::io::PwmLogger logger_;
-    // 新增 ControlLoopLogger 负责控制回路日志记录
-    rovctrl::io::ControlLoopLogger control_loop_logger_;
-
-    // 记录控制回路的数据（控制指令、控制状态、导航数据）
-    void log_control_loop_data(double t_s, const std::array<float, 8>& applied, 
-                               const std::array<float, 8>& cmd, const std::array<float, 8>& nav_data)
+    // 说明：控制日志应在 ControlLoop 的正确时刻写入（拿到 intent/guard/nav 的地方）
+    // 你可以在 ControlLoop 内部持有一个指向本实现的指针并调用这个函数，
+    // 或者把该能力通过 ControlLoop::PwmLog 接口显式暴露出来（更正统）。
+    void logControlLoop(double t_s,
+                        const rovctrl::io::ControlEffect& eff,
+                        const rovctrl::io::ControlGuardOutput& guard_out,
+                        const rovctrl::io::NavigationData& nav) noexcept
     {
-        rovctrl::io::ControlEffect eff;
-        eff.surge = applied[0];
-        eff.sway = applied[1];
-        eff.heave = applied[2];
-        eff.roll = applied[3];
-        eff.pitch = applied[4];
-        eff.yaw = applied[5];
-
-        rovctrl::io::ControlGuardOutput guard_out;
-        // 假设你有函数获取控制守护状态，填充 guard_out
-
-        rovctrl::io::NavigationData nav_data_struct;
-        // 假设你有方法填充导航数据 nav_data_struct
-
-        control_loop_logger_.log_data(t_s, eff, guard_out, nav_data_struct);
+        if (!control_loop_logger_.is_open()) return;
+        control_loop_logger_.log_data(t_s, eff, guard_out, nav);
     }
+
+private:
+    rovctrl::io::PwmLogger         pwm_logger_;
+    rovctrl::io::ControlLoopLogger control_loop_logger_;
 };
 
 } // namespace
 
-// 工厂：在 run() 中创建（保持你原来的“按开关创建”的行为）
 std::unique_ptr<ControlLoop::PwmLog> ControlLoop::make_pwm_logger_()
 {
     return std::make_unique<PwmLogImpl>();
