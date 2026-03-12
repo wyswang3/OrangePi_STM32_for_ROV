@@ -317,6 +317,32 @@ GcsSession::PacketVec GcsSession::handle_parsed_(const comm_gcs::UdpAddress& fro
         return out;
     }
 
+    case MsgType::MOTOR_TEST: {
+        if (cfg_.require_session_for_commands && !st_.established) {
+            if (auto ack = make_ack_if_req_(h, AckCode::INVALID_SESSION)) {
+                out.emplace_back(std::move(*ack));
+            }
+            return out;
+        }
+
+        if (!comm_gcs::codec::payload_size_is(pp.payload, sizeof(MotorTestCmd))) {
+            if (auto ack = make_ack_if_req_(h, AckCode::BAD_FORMAT)) {
+                out.emplace_back(std::move(*ack));
+            }
+            return out;
+        }
+
+        MotorTestCmd cmd{};
+        std::memcpy(&cmd, pp.payload.data, sizeof(cmd));
+
+        if (ev_.on_motor_test) {
+            ev_.on_motor_test(cmd);
+        }
+
+        ack_ok_if_req();
+        return out;
+    }
+
     case MsgType::STATUS: {
         // Usually ROV->GCS, server side ignore
         if (auto ack = make_ack_if_req_(h, AckCode::NOT_SUPPORTED)) {
@@ -362,6 +388,8 @@ bool GcsSession::is_command_type_(std::uint8_t msg_type) noexcept
     case MsgType::SET_MODE:
     case MsgType::SET_DOF_CMD:
     case MsgType::ESTOP:
+    case MsgType::ARM:
+    case MsgType::MOTOR_TEST:
         return true;
     default:
         return false;

@@ -56,22 +56,25 @@ void ControlLoop::apply_motor_test_override(
     }
     const std::size_t idx = static_cast<std::size_t>(id - 1);
 
+    // MotorTest 与正常控制互斥：其余通道全部归零。
+    for (std::size_t i = 0; i < thr_cmd.size(); ++i) {
+        thr_cmd[i] = 0.0f;
+    }
+
     // 这里根据 mode 决定如何覆盖 thr_cmd[idx]
     if (mt.mode == 0) {
         // 归一化 [-1..1] → 直接覆盖
-        thr_cmd[idx] = static_cast<float>(mt.value);
+        float v = static_cast<float>(mt.value);
+        if (v > 1.0f) v = 1.0f;
+        if (v < -1.0f) v = -1.0f;
+        thr_cmd[idx] = v;
     } else if (mt.mode == 1) {
-        // 如果你这边 thr_cmd 是 [-1..1]，那 mode=1 也可以先简单映射/忽略
-        // TODO：将绝对 PWM 映射为 normalized 值
-        // 暂时示例：仍旧当作 [-1..1]
-        thr_cmd[idx] = static_cast<float>(mt.value);
+        // 绝对 PWM duty(5.0..10.0) -> 归一化 [-1..1]
+        float duty = static_cast<float>(mt.value);
+        if (duty < 5.0f) duty = 5.0f;
+        if (duty > 10.0f) duty = 10.0f;
+        thr_cmd[idx] = (duty - 7.5f) / 2.5f;
     }
-
-    // 也可以选择：单电机测试时把其他通道归零
-    // for (std::size_t i = 0; i < thr_cmd.size(); ++i) {
-    //     if (i == idx) continue;
-    //     thr_cmd[i] = 0.0f;
-    // }
 }
 
 
@@ -105,7 +108,6 @@ bool ControlLoop::build_thruster_command_(ThrusterArray& thr_out)
     }
 
     // 3) 遥控兜底：只要有 teleop DOF，就直接按 6DOF → 8 推进器混配
-    const auto mode = ctrl_mgr_.mode();
     const auto& eff = guard_result_.effective_intent;
 
     if (eff.has_teleop_dof) {

@@ -10,7 +10,9 @@
 #include "gateway/bytes.hpp"
 #include "gateway/codec/gcs_codec.hpp"
 #include "gateway/session/gcs_session.hpp"
+#include "gateway/telemetry/status_telemetry_adapter.hpp"
 #include "proto_gcs/gcs_protocol.hpp"
+#include "shared/msg/telemetry_frame_v2.hpp"
 
 namespace {
 
@@ -349,6 +351,78 @@ static int test_tick_status_rate_limit()
     return 0;
 }
 
+static int test_motor_test_dispatch()
+{
+    using namespace comm_gcs::session;
+    using namespace rovctrl::io::gcs;
+
+    bool motor_test_called = false;
+    MotorTestCmd seen{};
+
+    GcsSessionEvents ev{};
+    ev.on_motor_test = [&](const MotorTestCmd& cmd) {
+        motor_test_called = true;
+        seen = cmd;
+    };
+
+    GcsSession sess(GcsSessionConfig{}, ev);
+    const UdpAddress from{"127.0.0.1", 50004};
+    const std::uint64_t sid = do_handshake(sess, from);
+
+    MotorTestCmd mt{};
+    mt.enable = 1;
+    mt.motor_id = 4;
+    mt.mode = 0;
+    mt.value = 0.25f;
+    mt.duration_ms = 200;
+    mt.cmd_id = 77;
+    auto mt_bytes = comm_gcs::codec::to_bytes_vec(mt);
+
+    auto pkt = build_pkt(
+        MsgType::MOTOR_TEST,
+        /*seq*/11,
+        sid,
+        FLAG_ACK_REQ,
+        BytesView{mt_bytes.data(), mt_bytes.size()}
+    );
+
+    auto outs = sess.on_packet(from, BytesView{pkt.data(), pkt.size()});
+    auto ack_opt = find_first_parsed(outs, MsgType::ACK);
+    TEST_CHECK(ack_opt.has_value());
+    TEST_CHECK(motor_test_called);
+    TEST_EQ(seen.motor_id, 4);
+    TEST_EQ(seen.cmd_id, 77u);
+    return expect_ack(*ack_opt, /*ack_seq*/11u, AckCode::OK);
+}
+
+static int test_status_adapter_maps_runtime_state()
+{
+    shared::msg::TelemetryFrameV2 frame{};
+    frame.valid = 1;
+    frame.stamp_ns = 123456;
+    frame.control.estop_latched = 1;
+    frame.control.active_mode =
+        static_cast<std::uint8_t>(shared::msg::RuntimeControlMode::kFailsafe);
+    shared::msg::telemetry_write_cstr(frame.control.controller_name,
+                                      shared::msg::kTelemetryControllerNameMax,
+                                      "manual");
+    shared::msg::telemetry_write_cstr(frame.control.desired_controller,
+                                      shared::msg::kTelemetryControllerNameMax,
+                                      "pid");
+    frame.control.consecutive_failures = 2;
+    frame.control.auto_fail_limit = 3;
+
+    const auto st = comm_gcs::telemetry::build_status_telemetry(frame, true, true);
+    TEST_EQ(st.session_established, 1);
+    TEST_EQ(st.link_alive, 1);
+    TEST_EQ(st.estop, 1);
+    TEST_EQ(st.mode, static_cast<std::uint8_t>(rovctrl::io::gcs::WireControlMode::Failsafe));
+    TEST_EQ(st.consecutive_failures, 2u);
+    TEST_EQ(st.auto_fail_limit, 3u);
+    TEST_EQ(st.t_ns, 123456ull);
+    return 0;
+}
+
 } // namespace
 
 int main()
@@ -365,6 +439,12 @@ int main()
     if (rc != 0) return rc;
 
     rc = test_tick_status_rate_limit();
+    if (rc != 0) return rc;
+
+    rc = test_motor_test_dispatch();
+    if (rc != 0) return rc;
+
+    rc = test_status_adapter_maps_runtime_state();
     if (rc != 0) return rc;
 
     std::cout << "[test_session] all tests passed.\n";

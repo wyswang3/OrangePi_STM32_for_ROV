@@ -128,7 +128,7 @@ map_wire_mode_to_shared(std::uint8_t m) noexcept
     switch (static_cast<WCM>(m)) {
     case WCM::Manual:   return WM::kManual;
     case WCM::Auto:     return WM::kAuto;
-    case WCM::Failsafe: return WM::kNone;  // shared 侧暂无 failsafe，先映射到 kNone
+    case WCM::Failsafe: return WM::kFailsafe;
     case WCM::Unknown:
     default:            return WM::kNone;
     }
@@ -152,6 +152,7 @@ static ControlIntent make_base_intent(int intent_ttl_ms)
     w.ttl_ms   = static_cast<std::uint32_t>(intent_ttl_ms);
     w.stamp_ns = static_cast<std::uint64_t>(comm_gcs::codec::now_steady_ns());
     w.cmd_seq  = next_cmd_seq();
+    w.source_id = static_cast<std::uint8_t>(shared::msg::IntentSource::kGcs);
     return w;
 }
 
@@ -332,16 +333,6 @@ void attach_default_events(comm_gcs::session::GcsSessionEvents& sev,
 {
     auto& pub = ictx.pub;
     const int ttl_ms = ictx.intent_ttl_ms;
-
-    // 统一 dump 入口：简单指针判空
-    auto maybe_dump = [&](const char* tag) {
-        ShmHexDumper* dump = ictx.shm_dump;
-        if (!dump) {
-            return;
-        }
-        dump->maybe_dump(pub, tag);
-    };
-
 
     // 会话建立
     sev.on_session_established = [&](std::uint64_t sid, const comm_gcs::UdpAddress& peer){

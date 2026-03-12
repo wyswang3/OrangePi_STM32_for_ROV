@@ -58,6 +58,7 @@ static const char* mode_str(shared::msg::ControlMode m)
     case shared::msg::ControlMode::kManual: return "Manual";
     case shared::msg::ControlMode::kAuto:   return "Auto";
     case shared::msg::ControlMode::kHold:   return "Hold";
+    case shared::msg::ControlMode::kFailsafe: return "Failsafe";
     default: return "Unknown";
     }
 }

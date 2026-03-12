@@ -48,6 +48,7 @@ enum class MsgType : std::uint8_t {
     SET_DOF_CMD     = 21,
     ESTOP           = 22,
     ARM             = 23,   // ★ 新增：Arm / Disarm 命令
+    MOTOR_TEST      = 24,
 
     // telemetry (ROV -> GCS)
     STATUS          = 40,
@@ -220,6 +221,7 @@ static_assert(sizeof(ConnectConfirm) == 8,  "ConnectConfirm size must be 8");
 static_assert(sizeof(SetModeCmd)     == 20, "SetModeCmd size must be 20");
 static_assert(sizeof(SetDofCmd)      == 24, "SetDofCmd size must be 24");
 static_assert(sizeof(EstopCmd)       == 4,  "EstopCmd size must be 4 bytes");
+static_assert(sizeof(MotorTestCmd)   == 16, "MotorTestCmd size must be 16 bytes");
 
 // ============================================================================
 // CRC32C API (implementation in .cpp)
@@ -254,6 +256,7 @@ inline bool msg_type_known(std::uint8_t mt) noexcept
     case MsgType::SET_MODE:
     case MsgType::SET_DOF_CMD:
     case MsgType::ESTOP:
+    case MsgType::MOTOR_TEST:
     case MsgType::STATUS:
     case MsgType::ACK:
     case MsgType::ARM:      // ★ 新增：Arm / Disarm 命令

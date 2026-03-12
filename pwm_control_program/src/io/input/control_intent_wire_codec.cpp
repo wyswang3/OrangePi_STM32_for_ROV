@@ -38,6 +38,7 @@ map_mode_from_wire(shared::msg::ControlMode m) noexcept
     switch (m) {
     case WM::kManual: return CM::kManual;
     case WM::kAuto:   return CM::kAuto;
+    case WM::kFailsafe: return CM::kFailsafe;
     case WM::kNone:   return CM::kNone;
 
     // Forward-compat: core may not implement Hold yet.
@@ -56,6 +57,7 @@ map_mode_to_wire(rovctrl::control_core::ControlMode m) noexcept
     switch (m) {
     case CM::kManual: return WM::kManual;
     case CM::kAuto:   return WM::kAuto;
+    case CM::kFailsafe: return WM::kFailsafe;
     case CM::kNone:   return WM::kNone;
 
     default:          return WM::kNone;
@@ -93,9 +95,13 @@ bool decode_control_intent(const shared::msg::ControlIntent& w,
     c.clear_all();
 
     // 2) Meta / staleness fields (always copied)
+    c.intent_id = w.cmd_seq;
+    c.session_id = 0;
     c.cmd_seq  = w.cmd_seq;
     c.stamp_ns = w.stamp_ns;
     c.ttl_ms   = w.ttl_ms;
+    c.source_id = w.source_id;
+    c.valid = (w.flags != 0u) || (w.request_exit != 0);
 
     // 3) Lifecycle
     c.request_exit = (w.request_exit != 0);
@@ -164,6 +170,7 @@ bool encode_control_intent(const rovctrl::control_core::ControlIntent& c,
     w.cmd_seq  = c.cmd_seq;
     w.stamp_ns = c.stamp_ns;
     w.ttl_ms   = c.ttl_ms;
+    w.source_id = c.source_id;
 
     // 2) Lifecycle
     w.request_exit = c.request_exit ? 1u : 0u;

@@ -1,7 +1,5 @@
 #include "io/input/multi_input_provider.hpp"
 
-#include "platform/timebase.hpp"  // now_ns()
-
 #include <utility>  // std::move
 
 namespace rovctrl::io {
@@ -53,7 +51,8 @@ bool MultiInputProvider::has_payload_(const cc::ControlIntent& in) noexcept
            in.has_mode_request ||
            in.has_teleop_dof ||
            in.has_ref ||
-           in.has_ref_delta;
+           in.has_ref_delta ||
+           in.has_motor_test;
 }
 
 bool MultiInputProvider::poll(cc::ControlState& state, cc::ControlIntent& out)
@@ -93,13 +92,19 @@ bool MultiInputProvider::poll(cc::ControlState& state, cc::ControlIntent& out)
         secondary = (primary == &t) ? &g : &t;
     }
 
-    out.clear_all();
-    out.cmd_seq  = ++seq_;
-    out.stamp_ns = static_cast<std::uint64_t>(rovctrl::platform::timebase::now_ns());
-    out.ttl_ms   = cfg_.default_ttl_ms;
-
     if (!primary) {
+        out.clear_all();
         return true; // no payload
+    }
+
+    out = *primary;
+    out.valid = primary->valid || has_payload_(*primary);
+
+    if (out.intent_id == 0) {
+        out.intent_id = out.cmd_seq;
+    }
+    if (out.ttl_ms == 0) {
+        out.ttl_ms = cfg_.default_ttl_ms;
     }
 
     // 1) 安全类字段：primary + secondary 取并集（更安全）
@@ -136,6 +141,11 @@ bool MultiInputProvider::poll(cc::ControlState& state, cc::ControlIntent& out)
     if (primary->has_teleop_dof) {
         out.has_teleop_dof = true;
         out.teleop_dof_cmd = primary->teleop_dof_cmd;
+    }
+
+    if (primary->has_motor_test) {
+        out.has_motor_test = true;
+        out.motor_test     = primary->motor_test;
     }
 
     return true;
