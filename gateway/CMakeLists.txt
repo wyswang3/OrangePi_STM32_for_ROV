@@ -105,6 +105,7 @@ add_library(gateway_core
     src/IPC/nav/nav_state_subscriber_shm.cpp
     src/IPC/nav/nav_view_builder.cpp
     src/IPC/nav/nav_view_publisher_shm.cpp
+    src/IPC/state/telemetry_frame_v2_subscriber_shm.cpp
 
     # UDP + 会话管理
     src/udp/udp_client.cpp
@@ -162,6 +163,7 @@ gateway_add_app(teleop_local  apps/teleop_local.cpp)
 # ---- 3) 导航视图守护进程 / 调试工具 ----
 gateway_add_app(nav_viewd     apps/nav_viewd.cpp)
 gateway_add_app(nav_view_dump apps/nav_view_dump.cpp)
+gateway_add_app(telemetry_dump apps/telemetry_dump.cpp)
 
 # ---- 4) Intent 守护进程 / 调试工具 ----
 gateway_add_app(intentd       apps/intentd.cpp)

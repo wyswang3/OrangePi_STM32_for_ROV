@@ -18,11 +18,14 @@
 #include <chrono>
 #include <csignal>
 #include <iostream>
+#include <mutex>
 #include <string>
 #include <thread>
 
+#include "gateway/IPC/state/telemetry_frame_v2_subscriber_shm.hpp"
 #include "gateway/udp/udp_server.hpp"
 #include "gateway/session/gcs_session.hpp"
+#include "gateway/telemetry/status_telemetry_adapter.hpp"
 
 // shm publisher + shared wire intent
 #include "gateway/intent_publisher_shm.hpp"
@@ -138,6 +141,17 @@ int main(int argc, char** argv)
     shm_dump.every_ms  = dbg_shm_hex_every_ms;
     shm_dump.max_times = dbg_shm_hex_max;
 
+    comm_gcs::ipc::state::TelemetryFrameV2SubscriberShm telemetry_sub;
+    {
+        comm_gcs::ipc::state::TelemetryFrameV2SubscriberShm::Config tcfg{};
+        tcfg.enable = true;
+        tcfg.shm_name = "/rovctrl_telemetry_v2";
+        tcfg.lazy_init = true;
+        if (!telemetry_sub.init(tcfg)) {
+            std::cerr << "[WARN] TelemetryFrameV2SubscriberShm init failed; runtime telemetry will stay unavailable until SHM is ready.\n";
+        }
+    }
+
     // ---------------- 会话管理（GcsSession） ----------------
     comm_gcs::session::GcsSessionConfig scfg{};
     scfg.telem_hz                     = telem_hz;
@@ -165,6 +179,7 @@ int main(int argc, char** argv)
 
 
     comm_gcs::session::GcsSession sess(scfg, sev);
+    std::mutex sess_mu;
 
     // ---------------- UDP Server ----------------
     comm_gcs::UdpServer       srv;
@@ -178,10 +193,14 @@ int main(int argc, char** argv)
     const bool ok = srv.start(
         cfg,
         [&](const comm_gcs::UdpAddress& from, comm_gcs::BytesView payload){
-             // ★ 新增：调试打印收到的 GCS 报文类型
+            // ★ 新增：调试打印收到的 GCS 报文类型
             // gateway::app::dump_rx_msg_type(payload);
 
-            auto outs = sess.on_packet(from, payload);
+            comm_gcs::session::GcsSession::PacketVec outs;
+            {
+                std::lock_guard<std::mutex> lock(sess_mu);
+                outs = sess.on_packet(from, payload);
+            }
 
             for (auto& pkt : outs) {
                 // 对 ACK 报文做十六进制调试输出（集中封装在 gateway::app 里）
@@ -207,35 +226,39 @@ int main(int argc, char** argv)
         while (!g_stop.load()) {
             std::this_thread::sleep_for(period);
 
-            const auto& s = sess.state();
-            if (!s.have_peer) continue;
+            const auto frame_opt = telemetry_sub.poll();
 
-            rovctrl::io::gcs::StatusTelemetry stw{};
-            stw.session_established = s.established ? 1 : 0;
-            stw.link_alive          = s.link_alive  ? 1 : 0;
-            stw.estop               = s.estop       ? 1 : 0;
+            comm_gcs::session::GcsSessionState sess_state{};
+            std::optional<comm_gcs::session::GcsSession::ByteVec> pkt_opt;
+            {
+                std::lock_guard<std::mutex> lock(sess_mu);
+                sess_state = sess.state();
+                if (!sess_state.have_peer) {
+                    continue;
+                }
 
-            stw.mode = static_cast<std::uint8_t>(
-                s.established ? rovctrl::io::gcs::WireControlMode::Manual
-                              : rovctrl::io::gcs::WireControlMode::Unknown
-            );
+                rovctrl::io::gcs::StatusTelemetry stw{};
+                if (frame_opt) {
+                    stw = comm_gcs::telemetry::build_status_telemetry(
+                        *frame_opt,
+                        sess_state.established,
+                        sess_state.link_alive);
+                } else {
+                    stw.session_established = sess_state.established ? 1 : 0;
+                    stw.link_alive = sess_state.link_alive ? 1 : 0;
+                    stw.estop = sess_state.estop ? 1 : 0;
+                    stw.mode = static_cast<std::uint8_t>(rovctrl::io::gcs::WireControlMode::Unknown);
+                    stw.t_ns = comm_gcs::codec::now_steady_ns();
+                }
 
-            rovctrl::io::gcs::write_cstr(stw.active_controller,
-                                         rovctrl::io::gcs::kCtrlNameMaxLen,
-                                         "demo_active");
-            rovctrl::io::gcs::write_cstr(stw.desired_controller,
-                                         rovctrl::io::gcs::kCtrlNameMaxLen,
-                                         "demo_desired");
+                pkt_opt = sess.tick_status(stw);
+                sess_state = sess.state();
+            }
 
-            stw.consecutive_failures = 0;
-            stw.auto_fail_limit      = 0;
-            stw.t_ns                 = comm_gcs::codec::now_steady_ns();
-
-            auto pkt_opt = sess.tick_status(stw);
-            if (!pkt_opt) continue;
+            if (!pkt_opt || !sess_state.have_peer) continue;
 
             std::string e3;
-            (void)srv.send_to(s.peer,
+            (void)srv.send_to(sess_state.peer,
                               comm_gcs::BytesView{pkt_opt->data(), pkt_opt->size()},
                               &e3);
         }

@@ -1,6 +1,7 @@
 #include "platform/pwm_client.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <cstring>
 #include <iostream>
 #include <sstream>
@@ -16,6 +17,14 @@ extern "C" {
 namespace rovctrl::platform {
 
 namespace {
+
+static std::uint64_t steady_now_ns() noexcept
+{
+    using clock = std::chrono::steady_clock;
+    return static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(
+            clock::now().time_since_epoch()).count());
+}
 
 // 将 C++ 侧 motor 映射配置拷贝到 C 侧 pwm_ctrl_config_t，并做边界检查
 static void sanitize_motor_mapping(const PwmClientConfig& cfg,
@@ -92,6 +101,9 @@ bool PwmClient::init(const PwmClientConfig& cfg)
 
     cfg_ = cfg;
     clear_error();
+    last_heartbeat_tx_ns_ = 0;
+    last_heartbeat_ack_ns_ = 0;
+    last_rx_hb_ack_ = 0;
 
     // ------------------------------
     // Dummy backend
@@ -211,6 +223,9 @@ void PwmClient::shutdown()
     std::cerr << "[PwmClient] shutdown backend=" << backend_str(dummy_) << "\n";
     inited_ = false;
     clear_error();
+    last_heartbeat_tx_ns_ = 0;
+    last_heartbeat_ack_ns_ = 0;
+    last_rx_hb_ack_ = 0;
 }
 
 // ============================================================================
@@ -402,6 +417,21 @@ int PwmClient::step()
         return 0;
     }
 
+    const std::uint64_t now_ns = steady_now_ns();
+    constexpr std::uint64_t kHeartbeatPeriodNs = 500000000ull;
+    if (last_heartbeat_tx_ns_ == 0 || (now_ns - last_heartbeat_tx_ns_) >= kHeartbeatPeriodNs) {
+        const pwmh_result_t hb_rc = pwm_host_send_heartbeat();
+        if (hb_rc == PWMH_OK) {
+            last_heartbeat_tx_ns_ = now_ns;
+        } else {
+            std::ostringstream oss;
+            oss << "[PwmClient] pwm_host_send_heartbeat failed, rc=" << static_cast<int>(hb_rc);
+            status_.ok = false;
+            status_.last_error = static_cast<int>(hb_rc);
+            status_.last_error_msg = oss.str();
+        }
+    }
+
     const int poll_rc = pwm_host_poll(1);
     if (poll_rc < 0) {
         std::ostringstream oss;
@@ -409,6 +439,13 @@ int PwmClient::step()
         status_.ok             = false;
         status_.last_error     = poll_rc;
         status_.last_error_msg = oss.str();
+    }
+
+    pwm_host_stats_t host_stats{};
+    pwm_host_get_stats(&host_stats);
+    if (host_stats.rx_hb_ack > last_rx_hb_ack_) {
+        last_rx_hb_ack_ = host_stats.rx_hb_ack;
+        last_heartbeat_ack_ns_ = now_ns;
     }
 
     const int rc = pwm_ctrl_step();
@@ -500,6 +537,39 @@ bool PwmClient::getLastApplied(std::array<float, kNumPwmChannels>& out_pct)
 
     for (int i = 0; i < PWM_HOST_CH_NUM; ++i) {
         out_pct[static_cast<std::size_t>(i)] = st.current_pct[i];
+    }
+
+    return true;
+}
+
+bool PwmClient::getTransportStats(PwmTransportStats& out) const
+{
+    out = PwmTransportStats{};
+
+    if (!inited_) {
+        return false;
+    }
+
+    if (dummy_) {
+        out.heartbeat_seen = true;
+        out.last_rtt_ms = 0.0f;
+        return true;
+    }
+
+    pwm_host_stats_t stats{};
+    pwm_host_get_stats(&stats);
+
+    out.tx_pwm = stats.tx_pwm;
+    out.tx_hb = stats.tx_hb;
+    out.rx_hb_ack = stats.rx_hb_ack;
+    out.last_rtt_ms = static_cast<float>(pwm_host_last_rtt_ms());
+
+    if (last_heartbeat_ack_ns_ != 0) {
+        const std::uint64_t now_ns = steady_now_ns();
+        if (now_ns >= last_heartbeat_ack_ns_) {
+            out.heartbeat_age_ms = (now_ns - last_heartbeat_ack_ns_) / 1000000ull;
+        }
+        out.heartbeat_seen = true;
     }
 
     return true;

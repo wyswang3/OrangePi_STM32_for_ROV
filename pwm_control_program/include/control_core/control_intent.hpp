@@ -47,9 +47,13 @@ struct MotorTestCmd final {
 struct ControlIntent final
 {
     // ---- 元信息（调试/时序） ----
+    std::uint64_t intent_id = 0;   ///< V1: 默认为 cmd_seq，可扩展为全局 intent id
+    std::uint64_t session_id = 0;  ///< 若上游可提供会话号，则透传；否则为 0
     std::uint64_t cmd_seq  = 0;   ///< 输入序列号（输入源自增）
     std::uint64_t stamp_ns = 0;   ///< 输入产生时间（steady ns；若无法提供可置 0）
     std::uint32_t ttl_ms   = 0;   ///< 输入有效期（0 表示“使用控制侧默认 TTL”）
+    std::uint8_t  source_id = 0;  ///< 与 shared::msg::IntentSource 对齐的来源编号
+    bool          valid = false;  ///< 该帧是否携带过有效上游意图
 
     // ---- 生命周期/安全相关 ----
     bool request_exit   = false;  ///< 请求退出主循环（例如按下 quit）
@@ -118,9 +122,13 @@ struct ControlIntent final
      */
     void clear_all() noexcept
     {
+        intent_id = 0;
+        session_id = 0;
         cmd_seq  = 0;
         stamp_ns = 0;
         ttl_ms   = 0;
+        source_id = 0;
+        valid = false;
         clear_payload();
     }
 };

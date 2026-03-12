@@ -63,6 +63,8 @@ public:
         int  step_error_log_interval = 100;   ///< 每多少次 step 错误打印一次日志
         bool log_timing              = false; ///< 如需打印每周期 dt / jitter，可开启
         bool enable_pwm_log          = true;  ///< 是否记录 PWM 日志（Cmd / Applied）
+        bool enable_telemetry_shm    = true;  ///< 是否发布 TelemetryFrameV2 SHM
+        std::string telemetry_shm_name{"/rovctrl_telemetry_v2"};
 
         // dt 限幅（防止系统卡顿时 dt 过大导致积分爆炸）
         double dt_clamp_max_sec = 0.2;
@@ -212,7 +214,7 @@ private:
     };
     std::unique_ptr<NavSub, NavSubDeleter> nav_sub_;
 
-    bool last_nav_valid_{false};   ///< 上一周期是否成功获得有效导航数据（用于告警与状态统计）
+    bool last_nav_valid_{false};   ///< 上一周期是否拿到导航快照（不等价于该快照 valid=1）
 
     // =============== PWM 日志（PIMPL，避免头文件引入 <fstream>） ===============
     std::unique_ptr<PwmLog> pwm_logger_;
@@ -226,7 +228,11 @@ private:
     /**
      * @brief 从 NavSub 中读取最新 NavStateView，并更新 state_
      * @param nav_view_out 输出：本周期使用的导航快照（含 pub_mono_ns 等）
-     * @return true 表示本周期有可用导航数据；false 表示缺失（可能刚启动或 nav_core 未运行）
+     * @return true 表示本周期至少拿到了一帧导航快照；false 表示链路上完全无快照
+     *
+     * 注意：
+     *   - 返回 true 不代表导航可信，可信度由 state_.nav_valid/nav_stale/nav_fault_code 等决定；
+     *   - 这样可以避免把 no-data / invalid / stale / degraded 折叠成同一个 false。
      */
     bool update_nav_feedback_(rovctrl::io::NavStateView& nav_view_out);
 

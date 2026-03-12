@@ -83,6 +83,15 @@ struct PwmClientStatus {
     std::string last_error_msg;       ///< 简要错误信息（带来源描述）
 };
 
+struct PwmTransportStats {
+    bool          heartbeat_seen   = false;
+    std::uint64_t tx_pwm           = 0;
+    std::uint64_t tx_hb            = 0;
+    std::uint64_t rx_hb_ack        = 0;
+    std::uint64_t heartbeat_age_ms = 0;
+    float         last_rtt_ms      = -1.0f;
+};
+
 /**
  * @brief 面向控制算法 / Teleop 的 PWM 客户端（C++ RAII 封装）
  *
@@ -122,6 +131,7 @@ public:
 
     /// 获取最近一次 step 后“逻辑电机视角”的当前占空比（单位：%）
     bool getLastApplied(std::array<float, kNumPwmChannels>& out_pct);
+    bool getTransportStats(PwmTransportStats& out) const;
 
     const PwmClientStatus& status() const { return status_; }
     bool is_ok() const { return status_.ok; }
@@ -143,6 +153,10 @@ private:
     std::array<float, kNumPwmChannels> target_pct_{};   // dummy: 目标 %
     std::array<float, kNumPwmChannels> current_pct_{};  // dummy: 当前 %
     bool debug_print_targets_{true};
+
+    std::uint64_t last_heartbeat_tx_ns_ = 0;
+    std::uint64_t last_heartbeat_ack_ns_ = 0;
+    std::uint64_t last_rx_hb_ack_ = 0;
 };
 
 } // namespace rovctrl::platform

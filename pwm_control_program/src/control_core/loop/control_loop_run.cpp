@@ -4,8 +4,8 @@
  *
  * Key points:
  *  - Nav feedback uses rovctrl::io::NavStateView (from gateway/nav_viewd via SHM).
- *  - nav_view / nav_ok are defined per-iteration in the correct scope (no shadowing).
- *  - age_ms_local is computed locally (optional), without mutating wire fields.
+ *  - nav_view / nav_present are defined per-iteration in the correct scope (no shadowing).
+ *  - 控制侧显式区分“拿到快照”和“快照可信”，不再把 invalid/stale/no-data 折叠成一个 false。
  *  - Manual/Teleop do not hard-require nav; Auto can require nav per policy.
  */
 
@@ -20,7 +20,11 @@
 #include <iomanip>
 #include <algorithm>
 
+#include "control_core/telemetry_frame_builder.hpp"
 #include "io/nav/nav_state_view.hpp"   // rovctrl::io::NavStateView
+#include "io/state/telemetry_publisher_shm.hpp"
+#include "shared/msg/control_intent.hpp"
+#include "shared/msg/telemetry_frame_v2.hpp"
 
 // ==================== 小仪表输出：推进器活动日志 ====================
 namespace {
@@ -133,11 +137,111 @@ int ControlLoop::run()
     int step_err_count   = 0;
     int nav_miss_counter = 0;
 
+    rovctrl::io::state::TelemetryPublisherShm telemetry_pub;
+    shared::msg::TelemetryFrameV2 telemetry{};
+    telemetry.source = static_cast<std::uint8_t>(shared::msg::TelemetrySource::kControlCore);
+
+    if (cfg_.enable_telemetry_shm) {
+        rovctrl::io::state::TelemetryPublisherShm::Config telemetry_cfg{};
+        telemetry_cfg.enable = true;
+        telemetry_cfg.shm_name = cfg_.telemetry_shm_name;
+        if (!telemetry_pub.init(telemetry_cfg)) {
+            std::cerr << "[ControlLoop] TelemetryPublisherShm init failed, continue without SHM telemetry.\n";
+        }
+    }
+
     std::cout << "[ControlLoop] starting v20260104-a, loop_hz=" << loop_hz
               << " Hz, active_controller=" << ctrl_mgr_.active_controller_name()
               << ", mode=" << static_cast<int>(ctrl_mgr_.mode()) << "\n";
 
     // ---------------- helpers (define once, not per-iteration) ----------------
+
+    ThrusterArray last_thr_cmd{};
+    last_thr_cmd.fill(0.0f);
+    std::array<float, 8> last_pwm_duty{};
+    last_pwm_duty.fill(0.0f);
+    shared::msg::FaultCode last_fault_code = shared::msg::FaultCode::kNone;
+    std::uint64_t telemetry_event_seq = 0;
+    std::uint64_t last_accepted_cmd_seq = 0;
+    std::uint64_t last_executed_cmd_seq = 0;
+    std::uint64_t last_expired_cmd_seq = 0;
+    std::uint64_t last_failed_cmd_seq = 0;
+    bool last_armed_state = false;
+    bool last_estop_state = false;
+    bool last_motor_test_state = false;
+    ControlMode last_mode_state = ctrl_mgr_.mode();
+
+    auto push_event = [&](shared::msg::EventCode event_code,
+                          shared::msg::FaultCode fault_code,
+                          int arg0,
+                          int arg1) {
+        shared::msg::EventRecord rec{};
+        rec.seq = ++telemetry_event_seq;
+        rec.stamp_ns = now_mono_ns_();
+        rec.event_code = static_cast<std::uint16_t>(event_code);
+        rec.fault_code = static_cast<std::uint16_t>(fault_code);
+        rec.arg0 = arg0;
+        rec.arg1 = arg1;
+        telemetry.last_event = rec;
+
+        const std::size_t idx =
+            static_cast<std::size_t>(telemetry.event_head % shared::msg::kTelemetryEventHistory);
+        telemetry.events[idx] = rec;
+        telemetry.event_head += 1;
+        if (telemetry.event_count < shared::msg::kTelemetryEventHistory) {
+            telemetry.event_count += 1;
+        }
+    };
+
+    auto set_command_result = [&](shared::msg::CommandResultCode status,
+                                  const ControlIntent& cmd,
+                                  shared::msg::EventCode event_code,
+                                  shared::msg::FaultCode fault_code) {
+        telemetry.last_command_result.intent_id =
+            (cmd.intent_id != 0) ? cmd.intent_id : cmd.cmd_seq;
+        telemetry.last_command_result.cmd_seq = cmd.cmd_seq;
+        telemetry.last_command_result.stamp_ns = now_mono_ns_();
+        telemetry.last_command_result.event_code = static_cast<std::uint16_t>(event_code);
+        telemetry.last_command_result.fault_code = static_cast<std::uint16_t>(fault_code);
+        telemetry.last_command_result.status = static_cast<std::uint8_t>(status);
+        telemetry.last_command_result.source = telemetry_control_source(cmd.source_id);
+    };
+
+    auto publish_telemetry = [&](const ControlIntent& applied_intent,
+                                 const rovctrl::io::NavStateView* nav_snapshot,
+                                 std::uint32_t nav_age_ms_total) {
+        if (!telemetry_pub.initialized()) return;
+
+        rovctrl::platform::PwmTransportStats transport_stats{};
+        const bool have_transport_stats = pwm_.getTransportStats(transport_stats);
+        const bool pwm_ok = pwm_.is_ok();
+        TelemetryBuildInput build_input{};
+        build_input.stamp_ns = now_mono_ns_();
+        build_input.applied_intent = applied_intent;
+        build_input.applied_reference = ref_;
+        build_input.current_state = state_;
+        build_input.active_mode = ctrl_mgr_.mode();
+        build_input.controller_status = ctrl_mgr_.status();
+        build_input.auto_fail_limit = ctrl_mgr_.auto_fail_limit();
+        build_input.armed = guard_.armed();
+        build_input.estop_latched = guard_.estop_latched();
+        build_input.failsafe_active =
+            (guard_result_.failsafe != FailsafeAction::kNone ||
+             ctrl_mgr_.mode() == ControlMode::kFailsafe);
+        build_input.input_stale = guard_result_.input_stale;
+        build_input.thruster_cmd = last_thr_cmd;
+        build_input.pwm_duty = last_pwm_duty;
+        build_input.pwm_ok = pwm_ok;
+        build_input.have_transport_stats = have_transport_stats;
+        build_input.transport_stats = transport_stats;
+        build_input.nav_snapshot = nav_snapshot;
+        build_input.nav_age_ms = nav_age_ms_total;
+        build_input.last_fault_code = last_fault_code;
+
+        fill_telemetry_frame_v2(telemetry, build_input);
+
+        (void)telemetry_pub.publish(telemetry);
+    };
 
     auto log_pwm_cmd_applied = [&](double t_s, const ThrusterArray& thr_cmd) {
         if (!pwm_logger_ || !pwm_logger_->is_open()) return;
@@ -156,6 +260,8 @@ int ControlLoop::run()
         thr_cmd.fill(0.0f); // 0 -> neutral
         (void)pwm_.setTargets(thr_cmd);
         (void)pwm_.step();
+        last_thr_cmd = thr_cmd;
+        (void)pwm_.getLastApplied(last_pwm_duty);
         log_pwm_cmd_applied(t_s, thr_cmd);
     };
 
@@ -231,30 +337,26 @@ int ControlLoop::run()
 
         // ---------------- nav update (B2: NavStateView) ----------------
         rovctrl::io::NavStateView nav_view{};              // per-cycle snapshot
-        const bool nav_ok = update_nav_feedback_(nav_view);
-
-        // Optional: local age based on publish mono_ns (do not mutate wire fields)
-        std::uint32_t nav_age_ms_local = 0;
-        if (nav_ok && nav_view.pub_mono_ns != 0) {
-            const std::uint64_t now_ns = now_mono_ns_(); // steady ns
-            if (now_ns >= nav_view.pub_mono_ns) {
-                nav_age_ms_local = static_cast<std::uint32_t>(
-                    (now_ns - nav_view.pub_mono_ns) / 1000000ull
-                );
-            }
-        }
+        const bool nav_present = update_nav_feedback_(nav_view);
+        const bool nav_usable = state_.nav_valid;
+        const std::uint32_t nav_age_ms_total =
+            nav_present ? nav_view.total_age_ms() : 0u;
 
         // 只有 Auto 模式要求导航（Manual/Teleop 不需要）
         const ControlMode mode_now = ctrl_mgr_.mode();
         const bool nav_required = (mode_now == ControlMode::kAuto);
 
-        if (!nav_ok) {
+        if (!nav_present) {
             ++nav_miss_counter;
 
             if (nav_required) {
                 if (!cfg_.allow_run_without_nav) {
                     std::cerr << "[ControlLoop] NavView missing in AUTO mode and allow_run_without_nav=false, entering failsafe.\n";
                     execute_failsafe_(FailsafeAction::kEmergencyStop);
+                    last_thr_cmd.fill(0.0f);
+                    (void)pwm_.getLastApplied(last_pwm_duty);
+                    last_fault_code = shared::msg::FaultCode::kNavUntrusted;
+                    publish_telemetry(ControlIntent{}, nullptr, 0);
                     return -8;
                 }
 
@@ -271,6 +373,19 @@ int ControlLoop::run()
                               << static_cast<int>(mode_now) << ").\n";
                 }
             }
+        } else if (!nav_usable) {
+            ++nav_miss_counter;
+            if (nav_required &&
+                (nav_miss_counter == 1 ||
+                 (cfg_.step_error_log_interval > 0 &&
+                  nav_miss_counter % cfg_.step_error_log_interval == 0))) {
+                std::cerr << "[ControlLoop] NavView present but untrusted in AUTO mode: "
+                          << "state=" << static_cast<int>(nav_view.payload().nav_state)
+                          << " stale=" << int(nav_view.payload().stale)
+                          << " fault=" << static_cast<int>(nav_view.payload().fault_code)
+                          << " age_ms=" << nav_age_ms_total
+                          << "\n";
+            }
         } else {
             nav_miss_counter = 0;
         }
@@ -280,7 +395,23 @@ int ControlLoop::run()
         if (!input_->poll(state_, intent)) {
             std::cerr << "[ControlLoop] InputProvider::poll(state,intent) failed.\n";
             execute_failsafe_(FailsafeAction::kEmergencyStop);
+            last_thr_cmd.fill(0.0f);
+            (void)pwm_.getLastApplied(last_pwm_duty);
+            last_fault_code = shared::msg::FaultCode::kCommFault;
+            publish_telemetry(ControlIntent{}, nav_present ? &nav_view : nullptr, nav_age_ms_total);
             return -10;
+        }
+
+        if (intent.valid && intent.cmd_seq != 0 && intent.cmd_seq != last_accepted_cmd_seq) {
+            last_accepted_cmd_seq = intent.cmd_seq;
+            set_command_result(shared::msg::CommandResultCode::kAccepted,
+                               intent,
+                               shared::msg::EventCode::kIntentAccepted,
+                               shared::msg::FaultCode::kNone);
+            push_event(shared::msg::EventCode::kIntentAccepted,
+                       shared::msg::FaultCode::kNone,
+                       static_cast<int>(intent.cmd_seq & 0x7fffffff),
+                       0);
         }
         // 调试：低频打印 Intent 的 6DOF（只要有 has_teleop_dof）
         // static int intent_debug_counter = 0;
@@ -300,6 +431,7 @@ int ControlLoop::run()
         if (intent.request_exit) {
             std::cout << "[ControlLoop] Input provider requested exit.\n";
             neutral_and_step(t_s);
+            publish_telemetry(intent, nav_present ? &nav_view : nullptr, nav_age_ms_total);
             break;
         }
 
@@ -338,6 +470,7 @@ int ControlLoop::run()
             // 3) 只要处于故障状态，就持续执行 neutral_and_step
             if (fault_now) {
                 neutral_and_step(t_s);
+                publish_telemetry(intent, nav_present ? &nav_view : nullptr, nav_age_ms_total);
                 continue;   // 本周期不再做控制器计算
             }
 
@@ -354,10 +487,58 @@ int ControlLoop::run()
 
             // Path A/B2: Guard expects NavStateView*, not NavState*
             const shared::msg::NavStateView* nav_ptr =
-                (nav_ok ? &nav_view.payload() : nullptr);
+                (nav_present ? &nav_view.payload() : nullptr);
             has_nav = (nav_ptr != nullptr);
 
             guard_result_ = guard_.step(now_ns, state_, nav_ptr, intent);
+
+            if (guard_result_.input_stale &&
+                intent.cmd_seq != 0 &&
+                intent.cmd_seq != last_expired_cmd_seq) {
+                last_expired_cmd_seq = intent.cmd_seq;
+                last_fault_code = shared::msg::FaultCode::kIntentStale;
+                set_command_result(shared::msg::CommandResultCode::kExpired,
+                                   intent,
+                                   shared::msg::EventCode::kIntentExpired,
+                                   last_fault_code);
+                push_event(shared::msg::EventCode::kIntentExpired,
+                           last_fault_code,
+                           static_cast<int>(intent.cmd_seq & 0x7fffffff),
+                           0);
+            }
+
+            if (intent.has_mode_request &&
+                intent.mode_request != ControlMode::kNone &&
+                !guard_result_.input_stale &&
+                guard_result_.effective_mode != intent.mode_request &&
+                intent.cmd_seq != last_failed_cmd_seq) {
+                last_failed_cmd_seq = intent.cmd_seq;
+                last_fault_code = shared::msg::FaultCode::kIllegalStateTransition;
+                set_command_result(shared::msg::CommandResultCode::kRejected,
+                                   intent,
+                                   shared::msg::EventCode::kIntentFailed,
+                                   last_fault_code);
+                push_event(shared::msg::EventCode::kIntentFailed,
+                           last_fault_code,
+                           static_cast<int>(intent.cmd_seq & 0x7fffffff),
+                           static_cast<int>(guard_result_.effective_mode));
+            }
+
+            if (intent.has_motor_test &&
+                intent.motor_test.enable &&
+                !guard_result_.effective_intent.has_motor_test &&
+                intent.cmd_seq != last_failed_cmd_seq) {
+                last_failed_cmd_seq = intent.cmd_seq;
+                last_fault_code = shared::msg::FaultCode::kMotorTestViolation;
+                set_command_result(shared::msg::CommandResultCode::kRejected,
+                                   intent,
+                                   shared::msg::EventCode::kMotorTestRejected,
+                                   last_fault_code);
+                push_event(shared::msg::EventCode::kMotorTestRejected,
+                           last_fault_code,
+                           static_cast<int>(intent.motor_test.motor_id),
+                           0);
+            }
 
             // ====== Manual 遥控兜底：无导航 + 有 teleop_dof 时不让 Guard 把模式打成 FAILSAFE ======
             const auto  eff_mode_before = guard_result_.effective_mode;
@@ -388,17 +569,86 @@ int ControlLoop::run()
             if (guard_result_.effective_intent.request_exit) {
                 std::cout << "[ControlLoop] Guard requested exit.\n";
                 neutral_and_step(t_s);
+                publish_telemetry(guard_result_.effective_intent,
+                                  nav_present ? &nav_view : nullptr,
+                                  nav_age_ms_total);
                 break;
             }
 
             if (guard_result_.failsafe != FailsafeAction::kNone) {
                 execute_failsafe_(guard_result_.failsafe);
+                last_thr_cmd.fill(0.0f);
+                (void)pwm_.getLastApplied(last_pwm_duty);
+                last_fault_code = (guard_result_.failsafe == FailsafeAction::kEmergencyStop)
+                    ? shared::msg::FaultCode::kSessionFault
+                    : (guard_result_.input_stale
+                        ? shared::msg::FaultCode::kIntentStale
+                        : shared::msg::FaultCode::kIllegalStateTransition);
+                push_event(shared::msg::EventCode::kFailsafeEntered,
+                           last_fault_code,
+                           static_cast<int>(guard_result_.failsafe),
+                           0);
+                publish_telemetry(guard_result_.effective_intent,
+                                  nav_present ? &nav_view : nullptr,
+                                  nav_age_ms_total);
                 continue;
             }
 
             if (guard_result_.mode_changed) {
-                (void)ctrl_mgr_.set_mode(guard_result_.effective_mode);
+                if (!ctrl_mgr_.set_mode(guard_result_.effective_mode)) {
+                    last_fault_code = shared::msg::FaultCode::kControllerUnavailable;
+                    set_command_result(shared::msg::CommandResultCode::kFailed,
+                                       intent,
+                                       shared::msg::EventCode::kIntentFailed,
+                                       last_fault_code);
+                    push_event(shared::msg::EventCode::kIntentFailed,
+                               last_fault_code,
+                               static_cast<int>(intent.cmd_seq & 0x7fffffff),
+                               static_cast<int>(guard_result_.effective_mode));
+                    execute_failsafe_(FailsafeAction::kZeroOutput);
+                    last_thr_cmd.fill(0.0f);
+                    (void)pwm_.getLastApplied(last_pwm_duty);
+                    publish_telemetry(guard_result_.effective_intent,
+                                      nav_present ? &nav_view : nullptr,
+                                      nav_age_ms_total);
+                    continue;
+                }
+                push_event(shared::msg::EventCode::kModeChanged,
+                           shared::msg::FaultCode::kNone,
+                           static_cast<int>(guard_result_.effective_mode),
+                           0);
             }
+        }
+
+        if (guard_.armed() != last_armed_state) {
+            push_event(shared::msg::EventCode::kArmChanged,
+                       shared::msg::FaultCode::kNone,
+                       guard_.armed() ? 1 : 0,
+                       0);
+            last_armed_state = guard_.armed();
+        }
+        if (guard_.estop_latched() != last_estop_state) {
+            push_event(guard_.estop_latched()
+                           ? shared::msg::EventCode::kEstopLatched
+                           : shared::msg::EventCode::kEstopCleared,
+                       shared::msg::FaultCode::kNone,
+                       guard_.estop_latched() ? 1 : 0,
+                       0);
+            last_estop_state = guard_.estop_latched();
+        }
+        if (guard_result_.effective_intent.has_motor_test != last_motor_test_state) {
+            push_event(guard_result_.effective_intent.has_motor_test
+                           ? shared::msg::EventCode::kMotorTestStarted
+                           : shared::msg::EventCode::kMotorTestStopped,
+                       shared::msg::FaultCode::kNone,
+                       guard_result_.effective_intent.has_motor_test
+                           ? static_cast<int>(guard_result_.effective_intent.motor_test.motor_id)
+                           : 0,
+                       0);
+            last_motor_test_state = guard_result_.effective_intent.has_motor_test;
+        }
+        if (ctrl_mgr_.mode() != last_mode_state) {
+            last_mode_state = ctrl_mgr_.mode();
         }
 
         build_reference_from_guard_();
@@ -434,11 +684,30 @@ int ControlLoop::run()
         if (!ctrl_mgr_.compute(state_, ref_, output_, dt)) {
             std::cerr << "[ControlLoop] ControllerManager::compute() failed: "
                       << ctrl_mgr_.status().last_error << "\n";
+            last_fault_code = shared::msg::FaultCode::kControllerComputeFailed;
+            if (intent.cmd_seq != 0) {
+                set_command_result(shared::msg::CommandResultCode::kFailed,
+                                   intent,
+                                   shared::msg::EventCode::kIntentFailed,
+                                   last_fault_code);
+            }
 
             if (cfg_.enter_failsafe_on_controller_error) {
                 execute_failsafe_(FailsafeAction::kZeroOutput);
+                last_thr_cmd.fill(0.0f);
+                (void)pwm_.getLastApplied(last_pwm_duty);
+                push_event(shared::msg::EventCode::kFailsafeEntered,
+                           last_fault_code,
+                           static_cast<int>(ctrl_mgr_.mode()),
+                           0);
+                publish_telemetry(guard_result_.effective_intent,
+                                  nav_present ? &nav_view : nullptr,
+                                  nav_age_ms_total);
                 continue;
             }
+            publish_telemetry(guard_result_.effective_intent,
+                              nav_present ? &nav_view : nullptr,
+                              nav_age_ms_total);
             return -20;
         }
         // 调试：只在 teleop 有 DOF 时输出一行
@@ -519,12 +788,14 @@ int ControlLoop::run()
             if (rc < 0) {
                 std::cerr << "[ControlLoop] pwm_.setTargets() rc=" << rc
                           << " msg=" << pwm_.status().last_error_msg << "\n";
+                last_fault_code = shared::msg::FaultCode::kPwmStepFailed;
             }
         }
 
         const int step_rc = pwm_.step();
         if (step_rc < 0) {
             ++step_err_count;
+            last_fault_code = shared::msg::FaultCode::kPwmStepFailed;
 
             if (step_err_count <= 3 ||
                 (cfg_.step_error_log_interval > 0 &&
@@ -538,20 +809,52 @@ int ControlLoop::run()
                 std::cerr << "[ControlLoop] pwm_.step() errors exceed max_step_errors="
                           << cfg_.max_step_errors << ", entering failsafe and abort.\n";
                 execute_failsafe_(FailsafeAction::kEmergencyStop);
+                last_thr_cmd.fill(0.0f);
+                (void)pwm_.getLastApplied(last_pwm_duty);
+                publish_telemetry(guard_result_.effective_intent,
+                                  nav_present ? &nav_view : nullptr,
+                                  nav_age_ms_total);
                 return -30;
             }
+            (void)pwm_.getLastApplied(last_pwm_duty);
+            publish_telemetry(guard_result_.effective_intent,
+                              nav_present ? &nav_view : nullptr,
+                              nav_age_ms_total);
             continue;  // 这轮循环失败，跳到下一轮
         }
 
         step_err_count = 0;
+        last_fault_code = shared::msg::FaultCode::kNone;
+        last_thr_cmd = thr_cmd;
+        (void)pwm_.getLastApplied(last_pwm_duty);
         log_pwm_cmd_applied(t_s, thr_cmd);
 
-        // Optional debug hook: 你之前保留的 nav_age_ms_local 也可以在这里用
-        (void)nav_age_ms_local;
+        if (intent.cmd_seq != 0 &&
+            intent.cmd_seq != last_executed_cmd_seq &&
+            telemetry_intent_has_payload(guard_result_.effective_intent))
+        {
+            last_executed_cmd_seq = intent.cmd_seq;
+            set_command_result(shared::msg::CommandResultCode::kExecuted,
+                               intent,
+                               shared::msg::EventCode::kIntentExecuted,
+                               shared::msg::FaultCode::kNone);
+            push_event(shared::msg::EventCode::kIntentExecuted,
+                       shared::msg::FaultCode::kNone,
+                       static_cast<int>(intent.cmd_seq & 0x7fffffff),
+                       0);
+        }
+
+        publish_telemetry(guard_result_.effective_intent,
+                          nav_present ? &nav_view : nullptr,
+                          nav_age_ms_total);
+
+        // Optional debug hook: 当前总导航 age 已统一收敛到 nav_age_ms_total。
+        (void)nav_age_ms_total;
     } // <-- 这里是 while(...) 主控制循环 的结尾大括号
 
     // 正常退出：再保险归中一次（比无条件 E-Stop 更符合“退出键结束程序”的语义）
     neutral_and_step(duration_d(clock::now() - start_time_).count());
+    publish_telemetry(ControlIntent{}, nullptr, 0);
 
     std::cout << "[ControlLoop] loop exited normally.\n";
     return 0;

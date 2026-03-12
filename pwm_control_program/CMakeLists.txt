@@ -170,6 +170,7 @@ set(SRC_APP
     src/control_core/app_main.cpp
 )
 
+    src/control_core/telemetry_frame_builder.cpp
 set(SRC_CONTROL_CORE
     src/control_core/control_loop.cpp
     src/control_core/control_guard.cpp
@@ -194,6 +195,7 @@ set(SRC_PLATFORM
     src/platform/timebase.cpp
 )
 
+    src/io/state/telemetry_publisher_shm.cpp
 set(SRC_IO_BASE
     
     src/io/input/teleop_input.cpp
