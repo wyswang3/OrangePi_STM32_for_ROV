@@ -29,7 +29,7 @@ class NavStateSubscriberShm final {
 public:
     struct Config {
         bool        enable   = true;
-        std::string shm_name = "/rovctrl_nav_state_v1";
+        std::string shm_name = "/rov_nav_state_v1";
         std::size_t shm_size = 0;   // 0 => use fstat() size
         bool        lazy_init = true;
     };

@@ -17,6 +17,7 @@ endif()
 # Options
 # =============================================================================
 option(PWMCTRL_STRICT_WARNINGS "Enable strict warnings (-Wall/-Wextra/...)" ON)
+option(PWMCTRL_BUILD_TESTS    "Build pwm_control_program tests" OFF)
 option(PWMCTRL_ASAN           "Enable AddressSanitizer/UBSan (Debug only recommended)" OFF)
 option(PWMCTRL_FORCE_STDCXXFS "Force link stdc++fs for old toolchains" OFF)
 
@@ -357,3 +358,34 @@ message(STATUS "[pwm_control_program] BUILD_TYPE             = ${CMAKE_BUILD_TYP
 message(STATUS "[pwm_control_program] PWMCTRL_ENABLE_GCS_SHM  = ${PWMCTRL_ENABLE_GCS_SHM}")
 message(STATUS "[pwm_control_program] PWMCTRL_ENABLE_GATEWAY  = ${PWMCTRL_ENABLE_GATEWAY}")
 message(STATUS "[pwm_control_program] PWMCTRL_GATEWAY_LIB     = ${PWMCTRL_GATEWAY_LIB}")
+
+if (PWMCTRL_BUILD_TESTS)
+    enable_testing()
+
+    add_executable(test_v1_closed_loop
+        tests/test_v1_closed_loop.cpp
+        src/control_core/control_guard.cpp
+        src/controllers/manual_controller.cpp
+        src/controllers/pid_controller.cpp
+        src/controllers/controller_manager.cpp
+        src/io/input/control_intent_wire_codec.cpp
+        src/io/input/multi_input_provider.cpp
+    )
+    target_include_directories(test_v1_closed_loop PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/include"
+        "${PWM_INCLUDE_DIR}"
+        "${EIGEN3_INCLUDE_DIR}"
+    )
+    target_link_libraries(test_v1_closed_loop PRIVATE shared_msgs proto_gcs Threads::Threads)
+    add_test(NAME pwmctrl_test_v1_closed_loop COMMAND test_v1_closed_loop)
+
+    add_executable(test_nav_view_shm_source
+        tests/test_nav_view_shm_source.cpp
+        src/io/nav/nav_view_subscriber_shm.cpp
+        src/io/nav/nav_view_shm_source.cpp
+    )
+    target_include_directories(test_nav_view_shm_source PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/include" "${PWM_INCLUDE_DIR}" "${EIGEN3_INCLUDE_DIR}" "${GATEWAY_DIR}/include")
+    target_link_libraries(test_nav_view_shm_source PRIVATE shared_msgs gateway_core Threads::Threads)
+    add_test(NAME pwmctrl_test_nav_view_shm_source COMMAND test_nav_view_shm_source)
+endif()

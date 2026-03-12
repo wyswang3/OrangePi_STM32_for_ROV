@@ -13,7 +13,7 @@ namespace rovctrl::io {
  * Design:
  *  - wire: the exact payload published by gateway (ABI-stable)
  *  - pub_*: publisher timestamps from SHM header (not part of wire payload)
- *  - age_ms_local: recomputed by control side based on pub_mono_ns
+ *  - age_ms_local: 本地读取这一 hop SHM 之后额外增加的延迟
  *
  * Rule of thumb:
  *  - business/controls should read from this type, not from shared::msg directly.
@@ -31,6 +31,16 @@ struct NavStateView final {
 
     const shared::msg::NavStateView& payload() const noexcept { return wire; }
     shared::msg::NavStateView&       payload() noexcept { return wire; }
+
+    [[nodiscard]] bool has_snapshot() const noexcept
+    {
+        return (pub_mono_ns != 0) || (wire.stamp_ns != 0);
+    }
+
+    [[nodiscard]] std::uint32_t total_age_ms() const noexcept
+    {
+        return wire.age_ms;
+    }
 };
 
 } // namespace rovctrl::io

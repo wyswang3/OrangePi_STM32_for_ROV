@@ -5,12 +5,13 @@
 // Pipeline:
 //   NavStateSubscriberShm.poll() -> NavViewBuilder.build() -> NavViewPublisherShm.publish()
 //
-// Responsibilities (mature pipeline):
-//   - Builder: mapping + health mapping + finite checks -> produces a candidate view (valid reflects data quality)
-//   - Daemon : publish semantics (mono_ns/age_ms), staleness policy, degrade/hold policy, SHM I/O scheduling
+// Responsibilities:
+//   - Builder: preserve explicit valid/stale/degraded/fault semantics from NavState
+//   - Daemon : define the current hop's age/stale policy and publish a control-facing snapshot
+//              that never silently reuses old kinematics as "current valid nav".
 //
 // Defaults:
-//   NavState shm: /rovctrl_nav_state_v1
+//   NavState shm: /rov_nav_state_v1
 //   NavView  shm: /rovctrl_nav_view_v1
 
 #include <atomic>
@@ -47,7 +48,7 @@ inline std::uint64_t now_mono_ns()
 
 struct Args {
     // SHM names
-    std::string nav_state_shm = "/rovctrl_nav_state_v1";
+    std::string nav_state_shm = "/rov_nav_state_v1";
     std::string nav_view_shm  = "/rovctrl_nav_view_v1";
 
     // Rates
@@ -59,8 +60,8 @@ struct Args {
     std::uint32_t warmup_ms  = 1500;  // startup grace period
 
     // Degrade policy
-    bool publish_when_stale = true;   // still publish when stale, but valid=0
-    bool hold_last_good     = true;   // in degrade, keep last_good payload but valid=0
+    bool publish_when_stale = true;   // still publish explicit invalid diagnostics when stale/no-data
+    bool hold_last_good     = false;  // deprecated compatibility knob; control-facing payload never reuses kinematics
     double degrade_pub_hz   = 5.0;    // degrade publish throttle (0 => publish every pub slot)
 
     // Logging
@@ -72,14 +73,14 @@ static void usage(const char* prog)
     std::cerr
         << "Usage: " << prog << " [options]\n"
         << "Options:\n"
-        << "  --nav-state-shm <name>     default: /rovctrl_nav_state_v1\n"
+        << "  --nav-state-shm <name>     default: /rov_nav_state_v1\n"
         << "  --nav-view-shm  <name>     default: /rovctrl_nav_view_v1\n"
         << "  --poll-hz <hz>             default: 50\n"
         << "  --pub-hz  <hz>             default: 20 (0 disables publish)\n"
         << "  --max-age-ms <ms>          default: 250\n"
         << "  --warmup-ms <ms>           default: 1500\n"
         << "  --publish-when-stale 0|1   default: 1\n"
-        << "  --hold-last-good     0|1   default: 1\n"
+        << "  --hold-last-good     0|1   default: 0 (deprecated)\n"
         << "  --degrade-pub-hz <hz>      default: 5 (0 disables degrade throttle)\n"
         << "  --print-hz <hz>            default: 2\n";
 }
@@ -203,6 +204,29 @@ inline void fill_publish_fields(shared::msg::NavStateView& out,
     }
 }
 
+inline shared::msg::NavStateView make_stale_view(
+    const shared::msg::NavStateView* last_view) noexcept
+{
+    shared::msg::NavStateView out{};
+    out.version = shared::msg::kNavStateViewWireVersion;
+    out.valid = 0;
+    out.stale = 1;
+    out.degraded = 1;
+    out.nav_state = shared::msg::NavRunState::kInvalid;
+    out.health = shared::msg::NavHealth::INVALID;
+    out.fault_code = shared::msg::NavFaultCode::kNavViewStale;
+    out.flags = 0;
+
+    // 保留上一次时间戳与诊断位，便于 downstream 解释“哪一帧开始变 stale”，
+    // 但绝不复用旧运动学量到控制面。
+    if (last_view) {
+        out.stamp_ns = last_view->stamp_ns;
+        out.sensor_mask = last_view->sensor_mask;
+        out.status_flags = last_view->status_flags;
+    }
+    return out;
+}
+
 } // namespace
 
 int main(int argc, char** argv)
@@ -225,6 +249,10 @@ int main(int argc, char** argv)
         << "  publish_when_stale=" << (args.publish_when_stale ? 1 : 0)
         << " hold_last_good=" << (args.hold_last_good ? 1 : 0)
         << " print_hz=" << args.print_hz << "\n";
+    if (args.hold_last_good) {
+        std::cerr << "[nav_viewd][WARN] --hold-last-good is deprecated; "
+                     "control-facing stale frames will still clear kinematics.\n";
+    }
 
     // -------------------------------------------------------------------------
     // Init subscriber (NavState shm)
@@ -276,12 +304,11 @@ int main(int argc, char** argv)
     // -------------------------------------------------------------------------
     // State
     // -------------------------------------------------------------------------
-    shared::msg::NavStateView last_good_view{};
-    bool has_last_good = false;
+    shared::msg::NavStateView last_view{};
+    bool has_last_view = false;
 
     // from subscriber header (publisher timestamps in nav shm)
     std::uint64_t last_nav_pub_mono_ns = 0;
-    std::uint64_t last_nav_pub_wall_ns = 0;
 
     // stats
     std::uint64_t cnt_poll = 0, cnt_poll_hit = 0, cnt_no_nav = 0;
@@ -301,16 +328,12 @@ int main(int argc, char** argv)
             if (nav_opt.has_value()) {
                 ++cnt_poll_hit;
                 last_nav_pub_mono_ns = mono_ns;
-                last_nav_pub_wall_ns = wall_ns;
+                (void)wall_ns;
 
-                // Builder defines "data quality" validity (finite + health mapping policy)
+                // 保留最新一帧候选，不区分 valid/invalid，让上游状态机显式透传到 control-facing SHM。
                 shared::msg::NavStateView cand = builder.build(*nav_opt);
-
-                // last_good only updates on valid==1 (mature: do not "freeze in" bad states)
-                if (cand.valid) {
-                    last_good_view = cand;
-                    has_last_good  = true;
-                }
+                last_view = cand;
+                has_last_view = true;
             } else {
                 ++cnt_no_nav;
             }
@@ -332,7 +355,7 @@ int main(int argc, char** argv)
                 ? UINT64_MAX
                 : (now_ns - last_nav_pub_mono_ns) / 1000000ull;
 
-            const bool no_nav_yet = (last_nav_pub_mono_ns == 0);
+            const bool no_nav_yet = !has_last_view;
             const bool stale = (!in_warmup) &&
                                (age_ms_from_nav_pub != UINT64_MAX) &&
                                (age_ms_from_nav_pub > args.max_age_ms);
@@ -342,9 +365,11 @@ int main(int argc, char** argv)
             bool is_degrade = false;
             shared::msg::NavStateView out{};
 
-            if (!stale && !no_nav_yet && has_last_good) {
-                out = last_good_view;
-                is_degrade = false;
+            const bool publish_diagnostic_only = stale || no_nav_yet;
+
+            if (!publish_diagnostic_only) {
+                out = last_view;
+                is_degrade = (out.valid == 0) || (out.degraded != 0);
             } else {
                 is_degrade = true;
                 if (stale) ++cnt_stale;
@@ -352,7 +377,7 @@ int main(int argc, char** argv)
                 if (!args.publish_when_stale) {
                     do_publish = false;
                 } else {
-                    // degrade throttle
+                    // stale/no-data 诊断帧可以降频，但不能再把旧 payload 当成当前有效状态。
                     if (degrade_period.count() > 0) {
                         if (now_tp < next_degrade) {
                             do_publish = false;
@@ -362,14 +387,7 @@ int main(int argc, char** argv)
                     }
 
                     if (do_publish) {
-                        if (args.hold_last_good && has_last_good) {
-                            out = last_good_view;
-                        } else {
-                            out = shared::msg::NavStateView{};
-                            out.version = shared::msg::kNavStateViewWireVersion; // keep ABI header sane
-                        }
-                        // Degrade semantics: always invalid
-                        out.valid = 0;
+                        out = make_stale_view(has_last_view ? &last_view : nullptr);
                     }
                 }
             }
@@ -377,17 +395,22 @@ int main(int argc, char** argv)
             if (do_publish) {
                 // === publish timestamp (single source of truth) ===
                 const std::uint64_t pub_mono_ns = now_mono_ns();
+                fill_publish_fields(out, pub_mono_ns);
 
-                out.mono_ns = pub_mono_ns;
-                out.age_ms  = 0;              // age 由控制侧 / GCS 计算
-
-                // If stale/degrade, valid must be 0
-                if (is_degrade) {
+                // stale/no-data 诊断帧必须显式无效，并标记为桥接层 stale。
+                if (publish_diagnostic_only) {
                     out.valid = 0;
+                    out.stale = 1;
+                    out.degraded = 1;
+                    out.nav_state = shared::msg::NavRunState::kInvalid;
+                    out.health = shared::msg::NavHealth::INVALID;
+                    if (out.fault_code == shared::msg::NavFaultCode::kNone) {
+                        out.fault_code = shared::msg::NavFaultCode::kNavViewStale;
+                    }
                 }
 
                 if (nav_pub.publish(out)) {
-                   ++cnt_pub;
+                    ++cnt_pub;
                     if (is_degrade) ++cnt_pub_degrade;
                 } else {
                     std::cerr << "[nav_viewd][WARN] publish failed\n";

@@ -175,6 +175,10 @@ if (GATEWAY_BUILD_TESTS)
     target_link_libraries(test_codec PRIVATE gateway_core)
     add_test(NAME gateway_test_codec COMMAND test_codec)
 
+    add_executable(test_nav_view_builder tests/test_nav_view_builder.cpp)
+    target_link_libraries(test_nav_view_builder PRIVATE gateway_core)
+    add_test(NAME gateway_test_nav_view_builder COMMAND test_nav_view_builder)
+
     add_executable(test_session tests/test_session.cpp)
     target_link_libraries(test_session PRIVATE gateway_core)
     add_test(NAME gateway_test_session COMMAND test_session)

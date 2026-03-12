@@ -210,7 +210,7 @@ bool NavStateSubscriberShm::init_shm(const Config& cfg)
     error_flag_  = true;
     return false;
 #else
-    shm_name_ = cfg.shm_name.empty() ? "/rovctrl_nav_state_v1" : cfg.shm_name;
+    shm_name_ = cfg.shm_name.empty() ? "/rov_nav_state_v1" : cfg.shm_name;
 
     if (shm_name_.empty() || shm_name_.front() != '/') {
         std::cerr << "[NavStateSubscriberShm] Invalid shm_name: " << shm_name_

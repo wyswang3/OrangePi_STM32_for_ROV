@@ -22,6 +22,32 @@ static inline double clampd(double v, double lo, double hi) {
 
 static inline double absd(double x) noexcept { return x < 0 ? -x : x; }
 
+static bool nav_ready_for_auto(const shared::msg::NavStateView& nav) noexcept
+{
+    const bool lifecycle_ok =
+        (nav.nav_state == shared::msg::NavRunState::kOk) ||
+        (nav.nav_state == shared::msg::NavRunState::kDegraded);
+    if (!lifecycle_ok) {
+        return false;
+    }
+    if (nav.valid == 0 || nav.stale != 0) {
+        return false;
+    }
+    if (nav.health == shared::msg::NavHealth::INVALID ||
+        nav.health == shared::msg::NavHealth::UNINITIALIZED) {
+        return false;
+    }
+    if (nav.fault_code != shared::msg::NavFaultCode::kNone) {
+        return false;
+    }
+
+    const std::uint16_t flags = nav.status_flags;
+    const bool imu_ok = shared::msg::nav_flag_has(flags, shared::msg::NAV_FLAG_IMU_OK);
+    const bool align_done = shared::msg::nav_flag_has(flags, shared::msg::NAV_FLAG_ALIGN_DONE);
+    const bool eskf_ok = shared::msg::nav_flag_has(flags, shared::msg::NAV_FLAG_ESKF_OK);
+    return imu_ok && align_done && eskf_ok;
+}
+
 ControlGuard::ControlGuard(ControlGuardConfig cfg)
     : cfg_(cfg)
 {
@@ -38,6 +64,12 @@ void ControlGuard::reset()
     last_intent_ns_  = 0;
     last_intent_cmd_seq_ = 0;
     input_age_ms_    = 0;
+    clear_hold_start_ns_ = 0;
+    clear_hold_ms_ = 0;
+    motor_test_active_ = false;
+    motor_test_deadline_ns_ = 0;
+    motor_test_cmd_seq_ = 0;
+    latched_motor_test_ = MotorTestCmd{};
 }
 
 // -----------------------------------------------------------------------------
@@ -81,42 +113,41 @@ bool ControlGuard::is_intent_stale(std::uint64_t now_ns,
 bool ControlGuard::nav_ok_for_mode(const shared::msg::NavStateView* nav,
                                   rovctrl::control_core::ControlMode requested) const
 {
-    // 1) 没有 nav 直接不 OK（通常用于 AUTO / stabilized 等模式）
-    if (!nav) return false;
+    if (!cfg_.enable_mode_gating) {
+        return true;
+    }
 
-    // 2) 基础可用性：gateway 的 nav_viewd 已经给了 valid/health
-    //    valid==1 表示字段有限且 health OK/DEGRADED（按你的 builder 策略）
-    if (nav->valid == 0) return false;
-
-    // 3) 你原来用 reserved1 来存 ESKF OK 等状态位 —— 现在 view.reserved1 里就是 status_flags（由 nav_viewd 填）
-    //    只要你在 nav_view_builder.cpp 里做了：
-    //      v.reserved1 = static_cast<uint32_t>(s.status_flags);
-    //    这里就可以继续用 reserved1 做 bitmask。
-    const std::uint32_t flags = nav->reserved1;
-    const bool eskf_ok = (flags & shared::msg::NAV_FLAG_ESKF_OK) != 0;
-
-    // 4) 根据模式决定是否强依赖 ESKF（示例：你按自己模式要求改）
     switch (requested) {
     case ControlMode::kManual:
         // 手动模式一般不强依赖导航
         return true;
 
     case ControlMode::kAuto:
-        // 自动/闭环依赖导航
-        return eskf_ok;
+        // 自动/闭环必须同时通过 valid/stale/fault/status_flags 生命周期检查。
+        return nav != nullptr && nav_ready_for_auto(*nav);
+
+    case ControlMode::kFailsafe:
+        return true;
 
     default:
-        return eskf_ok;
+        return nav != nullptr && nav_ready_for_auto(*nav);
     }
 }
 
 
 ControlMode ControlGuard::downgrade_mode(ControlMode requested) const
 {
-    // 做法 A：只允许降级到 Manual（或 Failsafe，取决于你策略）
-    // 这里采用更保守的：无法满足 gating 时 -> Manual
-    (void)requested;
-    return ControlMode::kManual;
+    switch (requested) {
+    case ControlMode::kAuto:
+        return ControlMode::kFailsafe;
+    case ControlMode::kFailsafe:
+        return ControlMode::kFailsafe;
+    case ControlMode::kManual:
+    case ControlMode::kNone:
+    case ControlMode::kUnknown:
+    default:
+        return ControlMode::kManual;
+    }
 }
 
 void ControlGuard::clamp_teleop(ControlIntent& inout) const
@@ -194,12 +225,19 @@ GuardResult ControlGuard::step(std::uint64_t now_ns,
     }
 
     // ========= 2) TTL / stale 判定 =========
-    const bool stale = is_intent_stale(now_ns, intent);
-    out.input_stale  = stale;
+    const bool input_stale = is_intent_stale(now_ns, intent);
+    out.input_stale  = input_stale;
+    if (last_intent_ns_ != 0 && now_ns >= last_intent_ns_) {
+        input_age_ms_ = static_cast<std::uint32_t>((now_ns - last_intent_ns_) / 1000000ull);
+    } else {
+        input_age_ms_ = 0;
+    }
 
-    if (stale) {
-        // TTL 过期：只保留 request_exit 语义，其它后续由 failsafe 和 ARM 逻辑决定
+    if (input_stale) {
+        // TTL 过期：清除所有执行载荷，只保留退出语义。
+        eff.clear_payload();
         eff.request_exit = req_exit ? 1 : 0;
+        eff.valid = false;
     }
 
     // ========= 3) E-STOP 锁存 / 解除 =========
@@ -298,6 +336,59 @@ GuardResult ControlGuard::step(std::uint64_t now_ns,
         }
     }
 
+    // ========= 5.5) MotorTest 互斥 / 限时 / 自动回零 =========
+    {
+        const auto clear_motor_test = [&]() {
+            motor_test_active_ = false;
+            motor_test_deadline_ns_ = 0;
+            motor_test_cmd_seq_ = 0;
+            latched_motor_test_ = MotorTestCmd{};
+            eff.has_motor_test = false;
+            eff.motor_test = MotorTestCmd{};
+        };
+
+        const auto clamp_motor_test = [&](MotorTestCmd& mt) {
+            if (mt.motor_id < 1) mt.motor_id = 1;
+            if (mt.motor_id > 8) mt.motor_id = 8;
+            if (mt.mode > 1) mt.mode = 0;
+            if (mt.mode == 0) {
+                mt.value = static_cast<float>(clampd(mt.value, -1.0, 1.0));
+            }
+
+            if (mt.duration_ms == 0) mt.duration_ms = 500;
+            if (mt.duration_ms > 1000) mt.duration_ms = 1000;
+        };
+
+        const bool can_run_test = out.armed && !estop_latched_;
+        const bool can_start_test = can_run_test && !input_stale;
+
+        if (eff.has_motor_test && eff.motor_test.enable) {
+            if (!can_start_test) {
+                clear_motor_test();
+            } else {
+                clamp_motor_test(eff.motor_test);
+                latched_motor_test_ = eff.motor_test;
+                motor_test_active_ = true;
+                motor_test_cmd_seq_ = intent.cmd_seq;
+                motor_test_deadline_ns_ =
+                    now_ns + static_cast<std::uint64_t>(eff.motor_test.duration_ms) * 1000000ull;
+            }
+        } else if (motor_test_active_ && can_run_test && now_ns < motor_test_deadline_ns_) {
+            eff.has_motor_test = true;
+            eff.motor_test = latched_motor_test_;
+        } else {
+            clear_motor_test();
+        }
+
+        if (eff.has_motor_test) {
+            eff.has_teleop_dof = false;
+            eff.teleop_dof_cmd = DofCommand{};
+            eff.has_ref = false;
+            eff.has_ref_delta = false;
+            eff.has_mode_request = false;
+        }
+    }
+
     // ========= 6) 模式门控（mode_request + nav 能力） =========
     {
         if (eff.has_mode_request && eff.mode_request != ControlMode::kNone) {
@@ -309,6 +400,13 @@ GuardResult ControlGuard::step(std::uint64_t now_ns,
 
             out.mode_changed = (requested != mode_);
             mode_            = requested;
+        }
+
+        // 当前处于 AUTO 时也要持续检查导航，而不是只在 mode_request 边沿检查一次。
+        if (mode_ == ControlMode::kAuto && !nav_ok_for_mode(nav, ControlMode::kAuto)) {
+            const ControlMode downgraded = downgrade_mode(mode_);
+            out.mode_changed = out.mode_changed || (downgraded != mode_);
+            mode_ = downgraded;
         }
 
         out.effective_mode = mode_;
@@ -327,17 +425,22 @@ GuardResult ControlGuard::step(std::uint64_t now_ns,
             fs = FailsafeAction::kEmergencyStop;
         } else {
             const auto mode_eff    = out.effective_mode;
-            const bool nav_missing = (nav == nullptr);
+            const bool nav_untrusted =
+                (mode_eff == ControlMode::kAuto) &&
+                !nav_ok_for_mode(nav, ControlMode::kAuto);
             const bool not_armed   = !out.armed;
 
             if (mode_eff == ControlMode::kAuto) {
-                // Auto 模式：对 stale / nav_missing / 未 ARM 严格防护
-                if (stale || nav_missing || not_armed) {
+                // Auto 模式：对输入 stale / 导航不可信 / 未 ARM 严格防护。
+                if (input_stale || nav_untrusted || not_armed) {
                     fs = FailsafeAction::kZeroOutput;
                 }
+            } else if (mode_eff == ControlMode::kFailsafe) {
+                fs = FailsafeAction::kZeroOutput;
+            } else if (input_stale && out.armed) {
+                // Manual stale 不再复用最后一帧，直接归零。
+                fs = FailsafeAction::kZeroOutput;
             }
-            // Manual 等模式：不因为 stale/nav_missing 进入 failsafe，
-            // 输出已经在“未 ARM”时被清空。
         }
 
         out.failsafe = fs;
@@ -382,9 +485,10 @@ GuardResult ControlGuard::step(std::uint64_t now_ns,
                   << " has_nav="        << (nav ? 1 : 0)
                   << " intent_has_dof=" << int(intent.has_teleop_dof)
                   << " eff_has_dof="    << int(eff.has_teleop_dof)
+                  << " eff_motor_test=" << int(eff.has_motor_test)
                   << " intent_ttl_ms="  << intent.ttl_ms
                   << " intent_age_ms="  << intent_age_ms
-                  << " stale="          << int(stale)
+                  << " stale="          << int(input_stale)
                   << " failsafe="       << static_cast<int>(out.failsafe)
                   << "\n";
 

@@ -7,6 +7,7 @@
 #include <type_traits>
 #include <tuple>     // std::tuple_size
 
+#include "shared/msg/nav_state.hpp"
 
 namespace rovctrl::control_core {
 
@@ -111,9 +112,13 @@ struct ControlState {
     bool has_accel    = false;
 
     // ================== 导航反馈（共享内存 NavState 映射） ==================
-    bool nav_valid = false;
+    bool nav_present = false;   ///< 是否拿到了导航快照（即使该快照可能 invalid/stale）
+    bool nav_valid = false;     ///< 当前快照是否允许控制器直接使用
+    bool nav_stale = true;
+    bool nav_degraded = false;
 
     std::uint64_t nav_t_ns = 0;
+    std::uint32_t nav_age_ms = 0;
 
     std::array<double, 3> nav_pos_ned{0.0, 0.0, 0.0};
     std::array<double, 3> nav_vel_ned{0.0, 0.0, 0.0};
@@ -124,6 +129,10 @@ struct ControlState {
     std::array<double, 3> nav_omega_b{0.0, 0.0, 0.0};
     std::array<double, 3> nav_acc_b{0.0, 0.0, 0.0};
 
+    shared::msg::NavRunState  nav_state = shared::msg::NavRunState::kUninitialized;
+    shared::msg::NavHealth    nav_health = shared::msg::NavHealth::UNINITIALIZED;
+    shared::msg::NavFaultCode nav_fault_code = shared::msg::NavFaultCode::kNone;
+    std::uint16_t nav_sensor_mask = shared::msg::NAV_SENSOR_NONE;
     std::uint16_t nav_status_flags = 0;
 
     // ================== 兼容区（减少老代码摩擦） ==================

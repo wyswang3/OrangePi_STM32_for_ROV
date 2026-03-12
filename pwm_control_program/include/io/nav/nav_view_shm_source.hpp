@@ -20,8 +20,8 @@ namespace rovctrl::io::nav {
  *    to INavStateSource (control-side interface).
  *
  * Policy:
- *  - Optional max-age filtering
- *  - Optional validity check
+ *  - Optional max-age stale marking
+ *  - Always return the newest snapshot when one exists; valid/stale/fault 由上层消费
  *  - Lazy init supported
  */
 class NavViewShmSource final : public rovctrl::io::INavStateSource {
@@ -30,7 +30,7 @@ public:
         bool          enable        = true;
         std::string   shm_name      = "/rovctrl_nav_view_v1";
         std::uint32_t max_age_ms    = 250;
-        bool          require_valid = true;
+        bool          require_valid = false; // deprecated: source no longer suppresses invalid snapshots
         bool          lazy_init     = true;
     };
 

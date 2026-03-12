@@ -125,6 +125,12 @@ private:
     // S2 clear (hold-to-clear) state
     std::uint64_t clear_hold_start_ns_{0};
     std::uint32_t clear_hold_ms_{0};
+
+    // Motor test latch state
+    bool          motor_test_active_{false};
+    std::uint64_t motor_test_deadline_ns_{0};
+    std::uint64_t motor_test_cmd_seq_{0};
+    MotorTestCmd  latched_motor_test_{};
 };
 
 } // namespace rovctrl::control_core
