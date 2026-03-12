@@ -17,9 +17,9 @@ endif()
 # Options
 # =============================================================================
 option(PWMCTRL_STRICT_WARNINGS "Enable strict warnings (-Wall/-Wextra/...)" ON)
-option(PWMCTRL_BUILD_TESTS    "Build pwm_control_program tests" OFF)
 option(PWMCTRL_ASAN           "Enable AddressSanitizer/UBSan (Debug only recommended)" OFF)
 option(PWMCTRL_FORCE_STDCXXFS "Force link stdc++fs for old toolchains" OFF)
+option(PWMCTRL_BUILD_TESTS    "Build pwm_control_program tests" OFF)
 
 # Route B: GCS comm is external process via shm; pwm_control_program reads shm.
 option(PWMCTRL_ENABLE_GCS_SHM "Enable GCS input via shared memory subscriber" ON)
@@ -170,10 +170,10 @@ set(SRC_APP
     src/control_core/app_main.cpp
 )
 
-    src/control_core/telemetry_frame_builder.cpp
 set(SRC_CONTROL_CORE
     src/control_core/control_loop.cpp
     src/control_core/control_guard.cpp
+    src/control_core/telemetry_frame_builder.cpp
     src/control_core/thruster_allocation.cpp
     src/control_core/trajectory_tracking.cpp
     src/control_core/app_context.cpp
@@ -195,11 +195,11 @@ set(SRC_PLATFORM
     src/platform/timebase.cpp
 )
 
-    src/io/state/telemetry_publisher_shm.cpp
 set(SRC_IO_BASE
     
     src/io/input/teleop_input.cpp
     src/io/input/telemetry_frame.cpp
+    src/io/state/telemetry_publisher_shm.cpp
 
     src/io/input/control_intent_wire_adapter.cpp
     src/io/input/control_intent_wire_codec.cpp
@@ -373,12 +373,19 @@ if (PWMCTRL_BUILD_TESTS)
         src/io/input/control_intent_wire_codec.cpp
         src/io/input/multi_input_provider.cpp
     )
+
     target_include_directories(test_v1_closed_loop PRIVATE
         "${CMAKE_CURRENT_SOURCE_DIR}/include"
         "${PWM_INCLUDE_DIR}"
         "${EIGEN3_INCLUDE_DIR}"
     )
-    target_link_libraries(test_v1_closed_loop PRIVATE shared_msgs proto_gcs Threads::Threads)
+
+    target_link_libraries(test_v1_closed_loop PRIVATE
+        shared_msgs
+        proto_gcs
+        Threads::Threads
+    )
+
     add_test(NAME pwmctrl_test_v1_closed_loop COMMAND test_v1_closed_loop)
 
     add_executable(test_nav_view_shm_source
@@ -386,8 +393,77 @@ if (PWMCTRL_BUILD_TESTS)
         src/io/nav/nav_view_subscriber_shm.cpp
         src/io/nav/nav_view_shm_source.cpp
     )
+
     target_include_directories(test_nav_view_shm_source PRIVATE
-        "${CMAKE_CURRENT_SOURCE_DIR}/include" "${PWM_INCLUDE_DIR}" "${EIGEN3_INCLUDE_DIR}" "${GATEWAY_DIR}/include")
-    target_link_libraries(test_nav_view_shm_source PRIVATE shared_msgs gateway_core Threads::Threads)
+        "${CMAKE_CURRENT_SOURCE_DIR}/include"
+        "${PWM_INCLUDE_DIR}"
+        "${EIGEN3_INCLUDE_DIR}"
+        "${GATEWAY_DIR}/include"
+    )
+
+    target_link_libraries(test_nav_view_shm_source PRIVATE
+        shared_msgs
+        gateway_core
+        Threads::Threads
+    )
+
     add_test(NAME pwmctrl_test_nav_view_shm_source COMMAND test_nav_view_shm_source)
+
+    add_executable(test_pid_framework
+        tests/test_pid_framework.cpp
+        src/control_core/app_context.cpp
+        src/control_core/telemetry_frame_builder.cpp
+        src/control_core/thruster_allocation.cpp
+        src/control_core/trajectory_tracking.cpp
+        src/controllers/manual_controller.cpp
+        src/controllers/pid_controller.cpp
+        src/controllers/controller_manager.cpp
+        src/platform/pwm_client.cpp
+        src/platform/timebase.cpp
+        src/io/input/teleop_input.cpp
+        src/io/input/multi_input_provider.cpp
+        src/io/input/gcs_shm_input_provider.cpp
+        src/io/input/intent_subscriber_shm.cpp
+        src/io/input/control_intent_wire_codec.cpp
+        src/io/state/telemetry_publisher_shm.cpp
+        src/utils/config_loader.cpp
+        src/utils/config_loader_pwm_client.cpp
+        src/utils/config_loader_alloc.cpp
+        src/utils/config_loader_trajectory.cpp
+        src/utils/config_loader_teleop_mixer.cpp
+        ${GATEWAY_DIR}/src/IPC/state/telemetry_frame_v2_subscriber_shm.cpp
+    )
+
+    target_include_directories(test_pid_framework PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/include"
+        "${PWM_INCLUDE_DIR}"
+        "${EIGEN3_INCLUDE_DIR}"
+        "${GATEWAY_DIR}/include"
+    )
+
+    target_compile_definitions(test_pid_framework PRIVATE
+        PID_FRAMEWORK_SOURCE_DIR="${UWSYS_ROOT}"
+    )
+
+    target_link_libraries(test_pid_framework PRIVATE
+        ${YAMLCPP_TARGET}
+        shared_msgs
+        proto_gcs
+        Threads::Threads
+    )
+
+    if (TARGET pwm_host)
+        target_link_libraries(test_pid_framework PRIVATE pwm_host)
+    elseif (EXISTS "${PWM_LIB_DIR}/libpwm_host.a")
+        target_link_libraries(test_pid_framework PRIVATE "${PWM_LIB_DIR}/libpwm_host.a")
+    endif()
+
+    if (UNIX AND NOT APPLE)
+        find_library(TEST_RT_LIB rt)
+        if (TEST_RT_LIB)
+            target_link_libraries(test_pid_framework PRIVATE ${TEST_RT_LIB})
+        endif()
+    endif()
+
+    add_test(NAME pwmctrl_test_pid_framework COMMAND test_pid_framework)
 endif()

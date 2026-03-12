@@ -33,6 +33,9 @@ bool ControllerManager::init_manual_only(ControllerPtr manual_ctrl)
     controllers_.clear();
     active_      = nullptr;
     active_name_.clear();
+    default_auto_name_ = options_.default_auto_controller.empty()
+                             ? std::string{"pid"}
+                             : options_.default_auto_controller;
 
     status_ = ControllerManagerStatus{};
     mode_   = ControlMode::kUnknown;
@@ -58,6 +61,30 @@ bool ControllerManager::init_manual_only(ControllerPtr manual_ctrl)
     status_.mode = mode_;
     status_.ok   = true;
 
+    return true;
+}
+
+bool ControllerManager::register_controller(ControllerPtr controller)
+{
+    if (!controller) {
+        set_error("register_controller: null controller");
+        return false;
+    }
+
+    const std::string name = controller->name();
+    if (name.empty()) {
+        set_error("register_controller: empty controller name");
+        return false;
+    }
+
+    if (has_controller(name)) {
+        set_error("register_controller: duplicate controller name: " + name);
+        return false;
+    }
+
+    controller->reset();
+    controllers_.emplace(name, std::move(controller));
+    clear_error();
     return true;
 }
 
@@ -190,12 +217,8 @@ bool ControllerManager::set_mode(ControlMode mode)
         return false;
     }
 
-    mode_        = mode;
-    status_.mode = mode_;
-    clear_error();
-
     // When switching to auto, ensure desired controller exists
-    if (mode_ == ControlMode::kAuto) {
+    if (mode == ControlMode::kAuto) {
         if (!status_.desired_controller.empty()) {
             if (!has_controller(status_.desired_controller)) {
                 set_error("desired auto controller not found: " + status_.desired_controller);
@@ -219,7 +242,7 @@ bool ControllerManager::set_mode(ControlMode mode)
     }
 
     // Manual mode: prefer "manual" controller if it exists
-    if (mode_ == ControlMode::kManual) {
+    if (mode == ControlMode::kManual) {
         if (has_controller("manual")) {
             if (!switch_active_controller("manual")) {
                 set_error("failed to switch to manual controller");
@@ -227,6 +250,10 @@ bool ControllerManager::set_mode(ControlMode mode)
             }
         }
     }
+
+    mode_        = mode;
+    status_.mode = mode_;
+    clear_error();
 
     return true;
 }

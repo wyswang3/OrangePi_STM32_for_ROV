@@ -15,6 +15,7 @@
 #include "control_core/trajectory_tracking.hpp"
 
 #include "controllers/manual_controller.hpp"
+#include "controllers/pid_controller.hpp"
 
 #include "io/input/gcs_shm_input_provider.hpp"
 #include "io/input/multi_input_provider.hpp"
@@ -27,6 +28,203 @@ namespace rovctrl::control_core {
 namespace fs = std::filesystem;
 
 namespace {
+
+struct AutoControllerRegistryConfig final {
+    std::string initial_mode{"manual"};
+    std::string default_auto_controller{"depth_heading_pid"};
+
+    bool enable_depth_hold{true};
+    bool enable_heading_hold{true};
+    bool enable_depth_heading{true};
+    bool enable_pid_alias{true};
+
+    rovctrl::controllers::DepthHoldPidControllerConfig    depth_hold{};
+    rovctrl::controllers::HeadingHoldPidControllerConfig  heading_hold{};
+    rovctrl::controllers::DepthHeadingPidControllerConfig depth_heading{};
+};
+
+template <class T>
+T yaml_or(const YAML::Node& node, const char* key, const T& fallback)
+{
+    const YAML::Node child = node[key];
+    return child ? child.as<T>() : fallback;
+}
+
+rovctrl::controllers::PidAxisConfig default_depth_axis_config() noexcept
+{
+    rovctrl::controllers::PidAxisConfig cfg{};
+    cfg.kp = 2.0;
+    cfg.ki = 0.5;
+    cfg.kd = 0.1;
+    cfg.anti_windup_enabled = true;
+    cfg.i_min = -100.0;
+    cfg.i_max = 100.0;
+    cfg.out_min = -300.0;
+    cfg.out_max = 300.0;
+    cfg.error_deadband = 0.005;
+    cfg.derivative_filter_enabled = true;
+    cfg.derivative_cutoff_hz = 5.0;
+    cfg.rate_limit_enabled = true;
+    cfg.max_abs_du = 50.0;
+    cfg.wrap_error = false;
+    cfg.invert_error = true;
+    return cfg;
+}
+
+rovctrl::controllers::PidAxisConfig default_heading_axis_config() noexcept
+{
+    rovctrl::controllers::PidAxisConfig cfg{};
+    cfg.kp = 1.5;
+    cfg.ki = 0.2;
+    cfg.kd = 0.05;
+    cfg.anti_windup_enabled = true;
+    cfg.i_min = -50.0;
+    cfg.i_max = 50.0;
+    cfg.out_min = -200.0;
+    cfg.out_max = 200.0;
+    cfg.error_deadband = 0.005;
+    cfg.derivative_filter_enabled = true;
+    cfg.derivative_cutoff_hz = 5.0;
+    cfg.rate_limit_enabled = true;
+    cfg.max_abs_du = 50.0;
+    cfg.wrap_error = true;
+    cfg.wrap_min = -3.14159265358979323846;
+    cfg.wrap_max =  3.14159265358979323846;
+    cfg.invert_error = false;
+    return cfg;
+}
+
+void apply_pid_common_defaults(const YAML::Node& root,
+                               rovctrl::controllers::PidAxisConfig& cfg)
+{
+    if (!root) return;
+
+    if (const YAML::Node anti = root["anti_windup"]) {
+        cfg.anti_windup_enabled = yaml_or(anti, "enabled", cfg.anti_windup_enabled);
+        cfg.i_min               = yaml_or(anti, "i_min", cfg.i_min);
+        cfg.i_max               = yaml_or(anti, "i_max", cfg.i_max);
+    }
+    if (const YAML::Node deadband = root["deadband"]) {
+        cfg.error_deadband = yaml_or(deadband, "error_deadband", cfg.error_deadband);
+    }
+    if (const YAML::Node derivative = root["derivative_filter"]) {
+        cfg.derivative_filter_enabled = yaml_or(derivative, "enabled", cfg.derivative_filter_enabled);
+        cfg.derivative_cutoff_hz      = yaml_or(derivative, "cutoff_hz", cfg.derivative_cutoff_hz);
+    }
+    if (const YAML::Node rate = root["rate_limit"]) {
+        cfg.rate_limit_enabled = yaml_or(rate, "enabled", cfg.rate_limit_enabled);
+        cfg.max_abs_du         = yaml_or(rate, "max_abs_du", cfg.max_abs_du);
+    }
+}
+
+void apply_pid_axis_overrides(const YAML::Node& root,
+                              rovctrl::controllers::PidAxisConfig& cfg)
+{
+    if (!root) return;
+
+    cfg.kp = yaml_or(root, "kp", cfg.kp);
+    cfg.ki = yaml_or(root, "ki", cfg.ki);
+    cfg.kd = yaml_or(root, "kd", cfg.kd);
+
+    cfg.out_max = yaml_or(root, "max_output", cfg.out_max);
+    cfg.out_min = yaml_or(root, "min_output", cfg.out_min);
+
+    if (const YAML::Node anti = root["anti_windup"]) {
+        cfg.anti_windup_enabled = yaml_or(anti, "enabled", cfg.anti_windup_enabled);
+        cfg.i_min               = yaml_or(anti, "i_min", cfg.i_min);
+        cfg.i_max               = yaml_or(anti, "i_max", cfg.i_max);
+    }
+
+    if (const YAML::Node wrap = root["wrap_around"]) {
+        cfg.wrap_error = yaml_or(wrap, "enabled", cfg.wrap_error);
+        if (const YAML::Node range = wrap["range"];
+            range && range.IsSequence() && range.size() >= 2) {
+            cfg.wrap_min = range[0].as<double>();
+            cfg.wrap_max = range[1].as<double>();
+        }
+    }
+}
+
+bool load_auto_controller_registry_config(const fs::path&           control_cfg_path,
+                                          AutoControllerRegistryConfig& out,
+                                          std::ostream&            log)
+{
+    out = AutoControllerRegistryConfig{};
+    out.depth_hold.depth = default_depth_axis_config();
+    out.heading_hold.heading = default_heading_axis_config();
+    out.depth_heading.depth = out.depth_hold.depth;
+    out.depth_heading.heading = out.heading_hold.heading;
+
+    if (control_cfg_path.empty()) {
+        log << "[ControlConfig] [WARN] control_params.yaml not resolved; use built-in PID defaults.\n";
+        return true;
+    }
+
+    try {
+        const YAML::Node root = YAML::LoadFile(control_cfg_path.string());
+        if (!root) {
+            log << "[ControlConfig] [ERR] empty YAML: " << control_cfg_path << "\n";
+            return false;
+        }
+
+        if (const YAML::Node modes = root["modes"]) {
+            out.initial_mode = yaml_or<std::string>(modes, "initial_mode", out.initial_mode);
+            out.default_auto_controller =
+                yaml_or<std::string>(modes, "default_auto_controller", out.default_auto_controller);
+        }
+
+        if (const YAML::Node controllers = root["controllers"]) {
+            out.default_auto_controller =
+                yaml_or<std::string>(controllers, "default_auto_controller", out.default_auto_controller);
+        }
+
+        const YAML::Node pid = root["controllers"]["pid"];
+        if (!pid) {
+            log << "[ControlConfig] [WARN] missing controllers.pid; use built-in PID defaults.\n";
+            return true;
+        }
+
+        const bool pid_enabled = yaml_or(pid, "enabled", true);
+        if (!pid_enabled) {
+            out.enable_depth_hold = false;
+            out.enable_heading_hold = false;
+            out.enable_depth_heading = false;
+            out.enable_pid_alias = false;
+            log << "[ControlConfig] [INFO] controllers.pid disabled.\n";
+            return true;
+        }
+
+        const YAML::Node common_defaults = pid["defaults"];
+        apply_pid_common_defaults(common_defaults, out.depth_hold.depth);
+        apply_pid_common_defaults(common_defaults, out.heading_hold.heading);
+        out.depth_heading.depth = out.depth_hold.depth;
+        out.depth_heading.heading = out.heading_hold.heading;
+
+        if (const YAML::Node depth = pid["depth"]) {
+            out.enable_depth_hold = yaml_or(depth, "enable", out.enable_depth_hold);
+            apply_pid_axis_overrides(depth, out.depth_hold.depth);
+            out.depth_hold.depth.invert_error = true;
+        }
+
+        if (const YAML::Node heading = pid["yaw_angle"]) {
+            out.enable_heading_hold = yaml_or(heading, "enable", out.enable_heading_hold);
+            apply_pid_axis_overrides(heading, out.heading_hold.heading);
+            out.heading_hold.heading.wrap_error = true;
+        }
+
+        out.enable_depth_heading = out.enable_depth_hold && out.enable_heading_hold;
+        out.enable_pid_alias = out.enable_depth_heading;
+        out.depth_heading.depth = out.depth_hold.depth;
+        out.depth_heading.heading = out.heading_hold.heading;
+
+        log << "[ControlConfig] [INFO] control_params loaded: " << control_cfg_path << "\n";
+        return true;
+    } catch (const std::exception& e) {
+        log << "[ControlConfig] [ERR] YAML::LoadFile failed: " << control_cfg_path
+            << " err=" << e.what() << "\n";
+        return false;
+    }
+}
 
 // 复用你之前 app_main.cpp 里的打印（搬到 context 内部）
 void print_pwm_mapping(const rovctrl::platform::PwmClientConfig& cfg, std::ostream& os)
@@ -244,6 +442,19 @@ AppBuildResult build_app_context(const AppBuildOptions& opt,
         return br;
     }
 
+    fs::path control_cfg_path;
+    (void)rovctrl::utils::resolve_control_config_path(
+        opt.control_config_cli, argv0, control_cfg_path, log);
+
+    AutoControllerRegistryConfig auto_cfg{};
+    if (!load_auto_controller_registry_config(control_cfg_path, auto_cfg, log)) {
+        br.ok       = false;
+        br.err_code = 64;
+        br.err_msg  = "control_params.yaml load failed.";
+        out_ctx.shutdown(log, 1.0f);
+        return br;
+    }
+
     // ===================== teleop_mixer.yaml -> ManualController 配置 =====================
     // 说明：
     //   - Manual 模式现在通过 TeleopMixerConfig 做 6DOF→8Thrusters 映射；
@@ -287,7 +498,7 @@ AppBuildResult build_app_context(const AppBuildOptions& opt,
 
     // ===================== Manual controller + ControllerManager =====================
     rovctrl::control_core::ControllerManagerOptions cm_opt{};
-    cm_opt.default_auto_controller = "pid";
+    cm_opt.default_auto_controller = auto_cfg.default_auto_controller;
     cm_opt.failsafe_zero_output    = true;
     cm_opt.min_switch_interval_sec = 0.2;
     cm_opt.auto_fail_limit         = 3;
@@ -307,7 +518,85 @@ AppBuildResult build_app_context(const AppBuildOptions& opt,
         return br;
     }
 
-    (void)out_ctx.ctrl_mgr.set_mode(rovctrl::control_core::ControlMode::kManual);
+    if (auto_cfg.enable_depth_hold) {
+        auto depth_ctrl =
+            rovctrl::control_core::ControllerManager::make_controller<
+                rovctrl::controllers::DepthHoldPidController>(auto_cfg.depth_hold);
+        if (!out_ctx.ctrl_mgr.register_controller(std::move(depth_ctrl))) {
+            br.ok       = false;
+            br.err_code = 65;
+            br.err_msg  = std::string("register depth_hold_pid failed: ") +
+                          out_ctx.ctrl_mgr.status().last_error;
+            out_ctx.shutdown(log, 1.0f);
+            return br;
+        }
+    }
+
+    if (auto_cfg.enable_heading_hold) {
+        auto heading_ctrl =
+            rovctrl::control_core::ControllerManager::make_controller<
+                rovctrl::controllers::HeadingHoldPidController>(auto_cfg.heading_hold);
+        if (!out_ctx.ctrl_mgr.register_controller(std::move(heading_ctrl))) {
+            br.ok       = false;
+            br.err_code = 66;
+            br.err_msg  = std::string("register heading_hold_pid failed: ") +
+                          out_ctx.ctrl_mgr.status().last_error;
+            out_ctx.shutdown(log, 1.0f);
+            return br;
+        }
+    }
+
+    if (auto_cfg.enable_depth_heading) {
+        auto depth_heading_ctrl =
+            rovctrl::control_core::ControllerManager::make_controller<
+                rovctrl::controllers::DepthHeadingPidController>(auto_cfg.depth_heading);
+        if (!out_ctx.ctrl_mgr.register_controller(std::move(depth_heading_ctrl))) {
+            br.ok       = false;
+            br.err_code = 67;
+            br.err_msg  = std::string("register depth_heading_pid failed: ") +
+                          out_ctx.ctrl_mgr.status().last_error;
+            out_ctx.shutdown(log, 1.0f);
+            return br;
+        }
+    }
+
+    if (auto_cfg.enable_pid_alias) {
+        auto pid_ctrl =
+            rovctrl::control_core::ControllerManager::make_controller<
+                rovctrl::controllers::PidController>(auto_cfg.depth_heading);
+        if (!out_ctx.ctrl_mgr.register_controller(std::move(pid_ctrl))) {
+            br.ok       = false;
+            br.err_code = 68;
+            br.err_msg  = std::string("register pid failed: ") +
+                          out_ctx.ctrl_mgr.status().last_error;
+            out_ctx.shutdown(log, 1.0f);
+            return br;
+        }
+    }
+
+    rovctrl::control_core::ControlMode initial_mode = rovctrl::control_core::ControlMode::kManual;
+    if (!rovctrl::control_core::parse_control_mode(auto_cfg.initial_mode, initial_mode) ||
+        initial_mode == rovctrl::control_core::ControlMode::kNone ||
+        initial_mode == rovctrl::control_core::ControlMode::kUnknown) {
+        log << "[ControlConfig] [WARN] invalid initial_mode='" << auto_cfg.initial_mode
+            << "', fallback to manual.\n";
+        initial_mode = rovctrl::control_core::ControlMode::kManual;
+    }
+
+    if (!out_ctx.ctrl_mgr.set_mode(initial_mode)) {
+        log << "[ControlConfig] [WARN] initial mode switch to '"
+            << rovctrl::control_core::to_string(initial_mode)
+            << "' failed, fallback to manual: "
+            << out_ctx.ctrl_mgr.status().last_error << "\n";
+        if (!out_ctx.ctrl_mgr.set_mode(rovctrl::control_core::ControlMode::kManual)) {
+            br.ok       = false;
+            br.err_code = 69;
+            br.err_msg  = std::string("set_mode(manual) failed: ") +
+                          out_ctx.ctrl_mgr.status().last_error;
+            out_ctx.shutdown(log, 1.0f);
+            return br;
+        }
+    }
 
     // ===================== ControlLoop config =====================
     out_ctx.loop_cfg = rovctrl::control_core::ControlLoop::Config{};

@@ -20,6 +20,10 @@ set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
 option(ROV_BUILD_TESTS "Build all tests" OFF)
 set(GATEWAY_BUILD_TESTS ${ROV_BUILD_TESTS} CACHE BOOL "" FORCE)
 
+if (ROV_BUILD_TESTS)
+    enable_testing()
+endif()
+
 find_package(Threads REQUIRED)
 
 # =============================================================================

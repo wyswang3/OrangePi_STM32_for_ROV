@@ -233,6 +233,16 @@ public:
     bool init_manual_only(ControllerPtr manual_ctrl);
 
     /**
+     * @brief 注册一个额外控制器（典型用于 Auto 控制器族）
+     *
+     * 约束：
+     *   - 名称必须唯一；
+     *   - 只注册，不自动切换为 active controller；
+     *   - 线程模型仍然是单线程控制循环，调用方不应跨线程并发注册。
+     */
+    bool register_controller(ControllerPtr controller);
+
+    /**
      * @brief 基于 ControlParams 完成控制器注册与默认设置
      *
      * 典型工作：
@@ -329,6 +339,10 @@ public:
      */
     [[nodiscard]] std::string default_auto_controller() const {
         return default_auto_name_;
+    }
+
+    [[nodiscard]] std::uint32_t auto_fail_limit() const noexcept {
+        return options_.auto_fail_limit;
     }
 
 private:
