@@ -401,8 +401,26 @@ static int test_status_adapter_maps_runtime_state()
     frame.valid = 1;
     frame.stamp_ns = 123456;
     frame.control.estop_latched = 1;
+    frame.control.armed = 1;
+    frame.control.failsafe_active = 1;
     frame.control.active_mode =
         static_cast<std::uint8_t>(shared::msg::RuntimeControlMode::kFailsafe);
+    frame.system.nav_valid = 0;
+    frame.system.nav_stale = 1;
+    frame.system.nav_degraded = 1;
+    frame.system.nav_state =
+        static_cast<std::uint8_t>(shared::msg::RuntimeNavState::kInvalid);
+    frame.system.fault_state = 1;
+    frame.system.health_state =
+        static_cast<std::uint8_t>(shared::msg::HealthState::kFault);
+    frame.system.last_fault_code =
+        static_cast<std::uint16_t>(shared::msg::FaultCode::kNavUntrusted);
+    frame.last_command_result.status =
+        static_cast<std::uint8_t>(shared::msg::CommandResultCode::kFailed);
+    frame.last_command_result.fault_code =
+        static_cast<std::uint16_t>(shared::msg::FaultCode::kNavUntrusted);
+    frame.last_command_result.cmd_seq = 77;
+    frame.seq = 1234;
     shared::msg::telemetry_write_cstr(frame.control.controller_name,
                                       shared::msg::kTelemetryControllerNameMax,
                                       "manual");
@@ -416,7 +434,25 @@ static int test_status_adapter_maps_runtime_state()
     TEST_EQ(st.session_established, 1);
     TEST_EQ(st.link_alive, 1);
     TEST_EQ(st.estop, 1);
+    TEST_EQ(st.armed, 1);
     TEST_EQ(st.mode, static_cast<std::uint8_t>(rovctrl::io::gcs::WireControlMode::Failsafe));
+    TEST_EQ(st.failsafe_active, 1);
+    TEST_EQ(st.nav_valid, 0);
+    TEST_EQ(st.nav_stale, 1);
+    TEST_EQ(st.nav_degraded, 1);
+    TEST_EQ(st.nav_state,
+            static_cast<std::uint8_t>(shared::msg::RuntimeNavState::kInvalid));
+    TEST_EQ(st.fault_state, 1);
+    TEST_EQ(st.health_state,
+            static_cast<std::uint8_t>(shared::msg::HealthState::kFault));
+    TEST_EQ(st.command_status,
+            static_cast<std::uint8_t>(shared::msg::CommandResultCode::kFailed));
+    TEST_EQ(st.last_fault_code,
+            static_cast<std::uint16_t>(shared::msg::FaultCode::kNavUntrusted));
+    TEST_EQ(st.command_fault_code,
+            static_cast<std::uint16_t>(shared::msg::FaultCode::kNavUntrusted));
+    TEST_EQ(st.status_seq, 1234u);
+    TEST_EQ(st.command_cmd_seq, 77ull);
     TEST_EQ(st.consecutive_failures, 2u);
     TEST_EQ(st.auto_fail_limit, 3u);
     TEST_EQ(st.t_ns, 123456ull);

@@ -33,7 +33,20 @@ inline rovctrl::io::gcs::StatusTelemetry build_status_telemetry(
     out.session_established = session_established ? 1 : 0;
     out.link_alive = link_alive ? 1 : 0;
     out.estop = frame.control.estop_latched;
+    out.armed = frame.control.armed;
     out.mode = to_wire_mode(frame.control.active_mode);
+    out.failsafe_active = frame.control.failsafe_active;
+    out.nav_valid = frame.system.nav_valid;
+    out.nav_state = frame.system.nav_state;
+    out.nav_stale = frame.system.nav_stale;
+    out.nav_degraded = frame.system.nav_degraded;
+    out.fault_state = frame.system.fault_state;
+    out.health_state = frame.system.health_state;
+    out.command_status = frame.last_command_result.status;
+    out.last_fault_code = frame.system.last_fault_code;
+    out.command_fault_code = frame.last_command_result.fault_code;
+    out.status_seq = static_cast<std::uint32_t>(frame.seq & 0xFFFFFFFFu);
+    out.command_cmd_seq = frame.last_command_result.cmd_seq;
     rovctrl::io::gcs::write_cstr(out.active_controller,
                                  rovctrl::io::gcs::kCtrlNameMaxLen,
                                  frame.control.controller_name);

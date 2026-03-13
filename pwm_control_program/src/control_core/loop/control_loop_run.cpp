@@ -540,31 +540,8 @@ int ControlLoop::run()
                            0);
             }
 
-            // ====== Manual 遥控兜底：无导航 + 有 teleop_dof 时不让 Guard 把模式打成 FAILSAFE ======
-            const auto  eff_mode_before = guard_result_.effective_mode;
-            const auto& eff_intent      = guard_result_.effective_intent;
-
-            if (!has_nav && eff_intent.has_teleop_dof) {
-                // 1) 如果 Guard 想把模式切到 FAILSAFE，这里强制拉回 MANUAL
-                if (eff_mode_before == ControlMode::kFailsafe) {
-                    std::cout << "[ControlLoop][GUARD] override mode FAILSAFE->MANUAL "
-                              << "(manual teleop active, no nav)\n";
-
-                    guard_result_.effective_mode = ControlMode::kManual;
-                    // 只有当前控制器模式不是 Manual 时才认为“需要切换”
-                    guard_result_.mode_changed =
-                        (ctrl_mgr_.mode() != ControlMode::kManual);
-                }
-
-                // 2) 无导航 + 纯遥控场景下，忽略 Guard 的 failsafe 动作
-                if (guard_result_.failsafe != FailsafeAction::kNone) {
-                    std::cout << "[ControlLoop][GUARD] ignore failsafe="
-                              << static_cast<int>(guard_result_.failsafe)
-                              << " in Manual+no-nav teleop demo\n";
-                    guard_result_.failsafe = FailsafeAction::kNone;
-                }
-            }
-            // ====== Manual 遥控兜底结束 ======
+            // Guard owns the authoritative safety decision. ControlLoop must not
+            // silently downgrade FAILSAFE/ZeroOutput decisions based on local demos.
 
             if (guard_result_.effective_intent.request_exit) {
                 std::cout << "[ControlLoop] Guard requested exit.\n";

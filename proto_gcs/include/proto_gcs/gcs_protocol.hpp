@@ -164,21 +164,52 @@ struct AckPayload final {
     std::uint16_t reason   = 0; // reserved for future use
 };
 
+/**
+ * Control-facing status snapshot published by gateway to GCS.
+ *
+ * Semantics:
+ *   - session_established/link_alive come from the gateway session layer.
+ *   - armed/estop/mode/failsafe/nav/fault/command fields come from the latest
+ *     TelemetryFrameV2 published by control_core and are therefore the
+ *     authoritative runtime state, not a gateway-local guess.
+ *   - mode keeps WireControlMode values for backward-compatible UI handling.
+ *   - nav_state keeps shared::msg::RuntimeNavState numeric values.
+ *   - health_state keeps shared::msg::HealthState numeric values.
+ *   - command_status keeps shared::msg::CommandResultCode numeric values.
+ *   - last_fault_code / command_fault_code keep shared::msg::FaultCode values.
+ *   - t_ns is the control-core telemetry stamp_ns carried through this hop.
+ */
 struct StatusTelemetry final {
     std::uint8_t  session_established = 0;
     std::uint8_t  link_alive          = 0;
     std::uint8_t  estop               = 0;
-    std::uint8_t  reserved0           = 0;
+    std::uint8_t  armed               = 0;
 
     std::uint8_t  mode                = 0; // WireControlMode
-    std::uint8_t  reserved1           = 0;
-    std::uint16_t reserved2           = 0;
+    std::uint8_t  failsafe_active     = 0;
+    std::uint8_t  nav_valid           = 0;
+    std::uint8_t  nav_state           = 0; // shared::msg::RuntimeNavState
 
-    char active_controller[kCtrlNameMaxLen]{};
-    char desired_controller[kCtrlNameMaxLen]{};
+    std::uint8_t  nav_stale           = 0;
+    std::uint8_t  nav_degraded        = 0;
+    std::uint8_t  fault_state         = 0;
+    std::uint8_t  health_state        = 0; // shared::msg::HealthState
+
+    std::uint8_t  command_status      = 0; // shared::msg::CommandResultCode
+    std::uint8_t  reserved0           = 0;
+    std::uint16_t last_fault_code     = 0; // shared::msg::FaultCode
+
+    std::uint16_t command_fault_code  = 0; // shared::msg::FaultCode
+    std::uint16_t reserved1           = 0;
 
     std::uint32_t consecutive_failures = 0;
     std::uint32_t auto_fail_limit      = 0;
+
+    std::uint32_t status_seq           = 0;
+    std::uint64_t command_cmd_seq      = 0;
+
+    char active_controller[kCtrlNameMaxLen]{};
+    char desired_controller[kCtrlNameMaxLen]{};
 
     std::uint64_t t_ns = 0;
 };
@@ -222,6 +253,7 @@ static_assert(sizeof(SetModeCmd)     == 20, "SetModeCmd size must be 20");
 static_assert(sizeof(SetDofCmd)      == 24, "SetDofCmd size must be 24");
 static_assert(sizeof(EstopCmd)       == 4,  "EstopCmd size must be 4 bytes");
 static_assert(sizeof(MotorTestCmd)   == 16, "MotorTestCmd size must be 16 bytes");
+static_assert(sizeof(StatusTelemetry) == 80, "StatusTelemetry size must be 80 bytes");
 
 // ============================================================================
 // CRC32C API (implementation in .cpp)
