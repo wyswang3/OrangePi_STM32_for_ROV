@@ -1,6 +1,9 @@
 /**
  * @file   control_loop_log.cpp
- * @brief  PwmLog PIMPL implementation + separate ControlLoopLogger (no mixing).
+ * @brief  PwmLog PIMPL implementation.
+ *
+ * 控制状态/telemetry 时间线日志在 control_loop_run.cpp 中单独管理，
+ * 这里仅保留 PWM 记录，避免生成空的 control CSV。
  */
 
 #include "control_core/control_loop.hpp"
@@ -11,8 +14,6 @@
 #include <string>
 
 #include "io/log/pwm_logger.hpp"
-#include "io/log/control_loop_logger.hpp"
-
 namespace rovctrl::control_core {
 
 namespace {
@@ -31,20 +32,10 @@ public:
 
         // 强烈建议：分目录，彻底避免误覆盖/混写
         const fs::path root(root_dir);
-        const fs::path pwm_dir     = root / "pwm";
-        const fs::path control_dir = root / "control";
+        const fs::path pwm_dir = root / "pwm";
 
         // 1) PWM 日志：prefix 用调用方传入（例如 "pwm"），但落到 pwm/ 子目录
         if (!pwm_logger_.init(pwm_dir.string(), m, prefix)) {
-            return false;
-        }
-
-        // 2) 控制日志：固定前缀，落到 control/ 子目录
-        //    绝对不能用与 PWM 相同的 prefix
-        if (!control_loop_logger_.init(control_dir.string(), "control_loop")) {
-            // PWM 已开，控制日志没开：按你策略决定是否失败
-            // 我建议直接 return false，保证两份日志同时可用
-            pwm_logger_.close();
             return false;
         }
 
@@ -75,24 +66,10 @@ public:
     void close() noexcept override
     {
         pwm_logger_.close();
-        control_loop_logger_.close();
-    }
-
-    // 说明：控制日志应在 ControlLoop 的正确时刻写入（拿到 intent/guard/nav 的地方）
-    // 你可以在 ControlLoop 内部持有一个指向本实现的指针并调用这个函数，
-    // 或者把该能力通过 ControlLoop::PwmLog 接口显式暴露出来（更正统）。
-    void logControlLoop(double t_s,
-                        const rovctrl::io::ControlEffect& eff,
-                        const rovctrl::io::ControlGuardOutput& guard_out,
-                        const rovctrl::io::NavigationData& nav) noexcept
-    {
-        if (!control_loop_logger_.is_open()) return;
-        control_loop_logger_.log_data(t_s, eff, guard_out, nav);
     }
 
 private:
-    rovctrl::io::PwmLogger         pwm_logger_;
-    rovctrl::io::ControlLoopLogger control_loop_logger_;
+    rovctrl::io::PwmLogger pwm_logger_;
 };
 
 } // namespace

@@ -69,10 +69,13 @@ struct ControlLoopLogger::Impl {
             << ",eff_has_ref,eff_has_ref_delta,eff_request_exit,eff_intent_age_ms";
 
         // ControlGuardOutput（严格按头文件字段）
-        ofs << ",armed,estop_latched,effective_mode,has_nav,failsafe";
+        ofs << ",armed,estop_latched,effective_mode,has_nav,failsafe,input_stale";
 
         // NavigationData（严格按头文件字段）
-        ofs << ",nav_x,nav_y,nav_z,nav_roll,nav_pitch,nav_yaw";
+        ofs << ",nav_x,nav_y,nav_z,nav_roll,nav_pitch,nav_yaw,nav_depth_m"
+            << ",nav_present,nav_valid,nav_stale,nav_degraded"
+            << ",nav_age_ms,nav_state,nav_health,nav_fault_code"
+            << ",nav_sensor_mask,nav_status_flags";
 
         ofs << "\n";
         ofs.flush();
@@ -108,7 +111,8 @@ struct ControlLoopLogger::Impl {
             << "," << (guard_out.estop_latched ? 1 : 0)
             << "," << static_cast<int>(guard_out.effective_mode)
             << "," << (guard_out.has_nav ? 1 : 0)
-            << "," << (guard_out.failsafe ? 1 : 0);
+            << "," << (guard_out.failsafe ? 1 : 0)
+            << "," << (guard_out.input_stale ? 1 : 0);
 
         // 4) NavigationData
         ofs << "," << nav_data.x
@@ -116,7 +120,18 @@ struct ControlLoopLogger::Impl {
             << "," << nav_data.z
             << "," << nav_data.roll
             << "," << nav_data.pitch
-            << "," << nav_data.yaw;
+            << "," << nav_data.yaw
+            << "," << nav_data.depth_m
+            << "," << (nav_data.present ? 1 : 0)
+            << "," << (nav_data.valid ? 1 : 0)
+            << "," << (nav_data.stale ? 1 : 0)
+            << "," << (nav_data.degraded ? 1 : 0)
+            << "," << nav_data.age_ms
+            << "," << static_cast<unsigned>(nav_data.nav_state)
+            << "," << static_cast<unsigned>(nav_data.nav_health)
+            << "," << nav_data.fault_code
+            << "," << nav_data.sensor_mask
+            << "," << nav_data.status_flags;
 
         ofs << "\n";
         // 不强制每行 flush，避免 IO 开销过大；必要时可按周期 flush

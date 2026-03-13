@@ -207,6 +207,7 @@ set(SRC_IO_BASE
 
     src/io/log/pwm_logger.cpp
     src/io/log/control_loop_logger.cpp
+    src/io/log/telemetry_timeline_logger.cpp
 
     # RouteB can still include a telemetry adapter (for outgoing telemetry)
     
@@ -466,4 +467,48 @@ if (PWMCTRL_BUILD_TESTS)
     endif()
 
     add_test(NAME pwmctrl_test_pid_framework COMMAND test_pid_framework)
+
+    add_executable(test_nav_reconnect_pipeline
+        tests/test_nav_reconnect_pipeline.cpp
+        src/control_core/control_guard.cpp
+        src/control_core/telemetry_frame_builder.cpp
+        src/io/nav/nav_view_subscriber_shm.cpp
+        src/io/nav/nav_view_shm_source.cpp
+    )
+
+    target_include_directories(test_nav_reconnect_pipeline PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/include"
+        "${PWM_INCLUDE_DIR}"
+        "${EIGEN3_INCLUDE_DIR}"
+        "${GATEWAY_DIR}/include"
+    )
+
+    target_link_libraries(test_nav_reconnect_pipeline PRIVATE
+        shared_msgs
+        gateway_core
+        Threads::Threads
+    )
+
+    if (UNIX AND NOT APPLE)
+        if (TEST_RT_LIB)
+            target_link_libraries(test_nav_reconnect_pipeline PRIVATE ${TEST_RT_LIB})
+        endif()
+    endif()
+
+    add_test(NAME pwmctrl_test_nav_reconnect_pipeline COMMAND test_nav_reconnect_pipeline)
+
+    add_executable(test_telemetry_timeline_logger
+        tests/test_telemetry_timeline_logger.cpp
+        src/io/log/telemetry_timeline_logger.cpp
+    )
+
+    target_include_directories(test_telemetry_timeline_logger PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/include"
+    )
+
+    target_link_libraries(test_telemetry_timeline_logger PRIVATE
+        shared_msgs
+    )
+
+    add_test(NAME pwmctrl_test_telemetry_timeline_logger COMMAND test_telemetry_timeline_logger)
 endif()

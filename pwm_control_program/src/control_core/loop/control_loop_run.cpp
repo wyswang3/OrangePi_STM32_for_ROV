@@ -21,6 +21,8 @@
 #include <algorithm>
 
 #include "control_core/telemetry_frame_builder.hpp"
+#include "io/log/control_loop_logger.hpp"
+#include "io/log/telemetry_timeline_logger.hpp"
 #include "io/nav/nav_state_view.hpp"   // rovctrl::io::NavStateView
 #include "io/state/telemetry_publisher_shm.hpp"
 #include "shared/msg/control_intent.hpp"
@@ -150,6 +152,18 @@ int ControlLoop::run()
         }
     }
 
+    rovctrl::io::ControlLoopLogger control_loop_logger;
+    if ((cfg_.enable_pwm_log || cfg_.enable_telemetry_shm) &&
+        !control_loop_logger.init("./logs/control", "control_loop")) {
+        std::cerr << "[ControlLoop] ControlLoopLogger init failed, continue without control CSV.\n";
+    }
+
+    rovctrl::io::TelemetryTimelineLogger telemetry_logger;
+    if ((cfg_.enable_pwm_log || cfg_.enable_telemetry_shm) &&
+        !telemetry_logger.init("./logs/telemetry", "telemetry")) {
+        std::cerr << "[ControlLoop] TelemetryTimelineLogger init failed, continue without telemetry CSV.\n";
+    }
+
     std::cout << "[ControlLoop] starting v20260104-a, loop_hz=" << loop_hz
               << " Hz, active_controller=" << ctrl_mgr_.active_controller_name()
               << ", mode=" << static_cast<int>(ctrl_mgr_.mode()) << "\n";
@@ -210,8 +224,6 @@ int ControlLoop::run()
     auto publish_telemetry = [&](const ControlIntent& applied_intent,
                                  const rovctrl::io::NavStateView* nav_snapshot,
                                  std::uint32_t nav_age_ms_total) {
-        if (!telemetry_pub.initialized()) return;
-
         rovctrl::platform::PwmTransportStats transport_stats{};
         const bool have_transport_stats = pwm_.getTransportStats(transport_stats);
         const bool pwm_ok = pwm_.is_ok();
@@ -240,7 +252,62 @@ int ControlLoop::run()
 
         fill_telemetry_frame_v2(telemetry, build_input);
 
-        (void)telemetry_pub.publish(telemetry);
+        if (control_loop_logger.is_open()) {
+            rovctrl::io::ControlEffect eff{};
+            eff.surge = static_cast<float>(applied_intent.teleop_dof_cmd.surge);
+            eff.sway = static_cast<float>(applied_intent.teleop_dof_cmd.sway);
+            eff.heave = static_cast<float>(applied_intent.teleop_dof_cmd.heave);
+            eff.roll = static_cast<float>(applied_intent.teleop_dof_cmd.roll);
+            eff.pitch = static_cast<float>(applied_intent.teleop_dof_cmd.pitch);
+            eff.yaw = static_cast<float>(applied_intent.teleop_dof_cmd.yaw);
+            eff.has_ref = applied_intent.has_ref;
+            eff.has_ref_delta = applied_intent.has_ref_delta;
+            eff.request_exit = applied_intent.request_exit;
+            eff.intent_age_ms =
+                (applied_intent.stamp_ns > 0 && now_mono_ns_() >= applied_intent.stamp_ns)
+                    ? static_cast<std::uint32_t>((now_mono_ns_() - applied_intent.stamp_ns) / 1000000ull)
+                    : 0u;
+
+            rovctrl::io::ControlGuardOutput guard_out{};
+            guard_out.armed = guard_.armed();
+            guard_out.estop_latched = guard_.estop_latched();
+            guard_out.effective_mode = static_cast<int>(ctrl_mgr_.mode());
+            guard_out.has_nav = (nav_snapshot != nullptr);
+            guard_out.failsafe =
+                (guard_result_.failsafe != FailsafeAction::kNone ||
+                 ctrl_mgr_.mode() == ControlMode::kFailsafe);
+            guard_out.input_stale = guard_result_.input_stale;
+
+            rovctrl::io::NavigationData nav_data{};
+            nav_data.x = state_.nav_pos_ned[0];
+            nav_data.y = state_.nav_pos_ned[1];
+            nav_data.z = state_.nav_pos_ned[2];
+            nav_data.roll = state_.nav_rpy[0];
+            nav_data.pitch = state_.nav_rpy[1];
+            nav_data.yaw = state_.nav_rpy[2];
+            nav_data.depth_m = state_.nav_depth;
+            nav_data.present = state_.nav_present;
+            nav_data.valid = state_.nav_valid;
+            nav_data.stale = state_.nav_stale;
+            nav_data.degraded = state_.nav_degraded;
+            nav_data.age_ms = state_.nav_age_ms;
+            nav_data.nav_state = static_cast<std::uint8_t>(state_.nav_state);
+            nav_data.nav_health = static_cast<std::uint8_t>(state_.nav_health);
+            nav_data.fault_code = static_cast<std::uint16_t>(state_.nav_fault_code);
+            nav_data.sensor_mask = state_.nav_sensor_mask;
+            nav_data.status_flags = state_.nav_status_flags;
+
+            control_loop_logger.log_data(
+                duration_d(clock::now() - start_time_).count(), eff, guard_out, nav_data);
+        }
+
+        if (telemetry_logger.is_open()) {
+            telemetry_logger.log_frame(telemetry);
+        }
+
+        if (telemetry_pub.initialized()) {
+            (void)telemetry_pub.publish(telemetry);
+        }
     };
 
     auto log_pwm_cmd_applied = [&](double t_s, const ThrusterArray& thr_cmd) {

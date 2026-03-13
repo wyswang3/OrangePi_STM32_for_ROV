@@ -3,6 +3,7 @@
 
 #include <fstream>
 #include <array>
+#include <cstdint>
 #include <string>
 #include <ctime>
 #include <filesystem>
@@ -38,6 +39,19 @@ struct NavigationData {
     double roll;  ///< 滚转角
     double pitch; ///< 俯仰角
     double yaw;   ///< 偏航角
+    double depth_m; ///< 深度
+
+    bool present;   ///< 本周期是否拿到了导航快照
+    bool valid;     ///< 控制是否认为当前导航可信
+    bool stale;     ///< 当前导航是否 stale
+    bool degraded;  ///< 当前导航是否 degraded
+
+    std::uint32_t age_ms;       ///< control 看到的累计导航年龄
+    std::uint8_t nav_state;     ///< shared::msg::NavRunState
+    std::uint8_t nav_health;    ///< shared::msg::NavHealth
+    std::uint16_t fault_code;   ///< shared::msg::NavFaultCode
+    std::uint16_t sensor_mask;  ///< 当前 fresh 传感器
+    std::uint16_t status_flags; ///< 设备/估计器状态位
 };
 
 struct ControlEffect {
@@ -59,6 +73,7 @@ struct ControlGuardOutput {
     int effective_mode;      ///< 当前控制模式（例如：手动、自动）
     bool has_nav;            ///< 是否有导航数据
     bool failsafe;           ///< 是否进入故障安全模式
+    bool input_stale;        ///< 当前输入是否已过期
 };
 
 /**
