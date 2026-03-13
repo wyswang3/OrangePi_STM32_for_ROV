@@ -62,9 +62,11 @@ if (NOT TARGET shared_msgs)
 endif()
 
 if (NOT TARGET proto_gcs)
-    # 若上层未 add_subdirectory(proto_gcs)，则退化成 header-only INTERFACE
-    add_library(proto_gcs INTERFACE)
-    target_include_directories(proto_gcs INTERFACE "${PROTO_GCS_DIR}/include")
+    # 若上层未 add_subdirectory(proto_gcs)，则在本仓内补一个最小可链接实现。
+    add_library(proto_gcs STATIC
+        "${PROTO_GCS_DIR}/src/crc32c.cpp"
+    )
+    target_include_directories(proto_gcs PUBLIC "${PROTO_GCS_DIR}/include")
 else()
     # 若 proto_gcs 已存在但没导出 include 目录，这里强制补上
     get_target_property(_proto_gcs_inc proto_gcs INTERFACE_INCLUDE_DIRECTORIES)
@@ -104,6 +106,7 @@ add_library(gateway_core
     src/IPC/nav/nav_state_subscriber.cpp
     src/IPC/nav/nav_state_subscriber_shm.cpp
     src/IPC/nav/nav_view_builder.cpp
+    src/IPC/nav/nav_view_policy.cpp
     src/IPC/nav/nav_view_publisher_shm.cpp
     src/IPC/state/telemetry_frame_v2_subscriber_shm.cpp
 
@@ -180,6 +183,10 @@ if (GATEWAY_BUILD_TESTS)
     add_executable(test_nav_view_builder tests/test_nav_view_builder.cpp)
     target_link_libraries(test_nav_view_builder PRIVATE gateway_core)
     add_test(NAME gateway_test_nav_view_builder COMMAND test_nav_view_builder)
+
+    add_executable(test_nav_view_policy tests/test_nav_view_policy.cpp)
+    target_link_libraries(test_nav_view_policy PRIVATE gateway_core)
+    add_test(NAME gateway_test_nav_view_policy COMMAND test_nav_view_policy)
 
     add_executable(test_session tests/test_session.cpp)
     target_link_libraries(test_session PRIVATE gateway_core)

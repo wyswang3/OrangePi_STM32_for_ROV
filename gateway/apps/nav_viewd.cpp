@@ -26,6 +26,7 @@
 
 #include "gateway/IPC/nav/nav_state_subscriber_shm.hpp"
 #include "gateway/IPC/nav/nav_view_builder.hpp"
+#include "gateway/IPC/nav/nav_view_policy.hpp"
 #include "gateway/IPC/nav/nav_view_publisher_shm.hpp"
 
 #include "shared/msg/nav_state.hpp"
@@ -190,43 +191,6 @@ inline void advance_next(SteadyClock::time_point& next,
     if (now >= next) next = now + period;
 }
 
-inline void fill_publish_fields(shared::msg::NavStateView& out,
-                                std::uint64_t pub_mono_ns) noexcept
-{
-    out.mono_ns = pub_mono_ns;
-
-    // age_ms: prefer using stamp_ns (nav fusion timestamp). stamp_ns is steady-clock ns in your NavState.
-    if (out.stamp_ns != 0 && pub_mono_ns >= out.stamp_ns) {
-        const std::uint64_t age_ms64 = (pub_mono_ns - out.stamp_ns) / 1000000ull;
-        out.age_ms = (age_ms64 > 0xFFFFFFFFull) ? 0xFFFFFFFFu : static_cast<std::uint32_t>(age_ms64);
-    } else {
-        out.age_ms = 0xFFFFFFFFu; // unknown
-    }
-}
-
-inline shared::msg::NavStateView make_stale_view(
-    const shared::msg::NavStateView* last_view) noexcept
-{
-    shared::msg::NavStateView out{};
-    out.version = shared::msg::kNavStateViewWireVersion;
-    out.valid = 0;
-    out.stale = 1;
-    out.degraded = 1;
-    out.nav_state = shared::msg::NavRunState::kInvalid;
-    out.health = shared::msg::NavHealth::INVALID;
-    out.fault_code = shared::msg::NavFaultCode::kNavViewStale;
-    out.flags = 0;
-
-    // 保留上一次时间戳与诊断位，便于 downstream 解释“哪一帧开始变 stale”，
-    // 但绝不复用旧运动学量到控制面。
-    if (last_view) {
-        out.stamp_ns = last_view->stamp_ns;
-        out.sensor_mask = last_view->sensor_mask;
-        out.status_flags = last_view->status_flags;
-    }
-    return out;
-}
-
 } // namespace
 
 int main(int argc, char** argv)
@@ -296,6 +260,7 @@ int main(int argc, char** argv)
     const auto degrade_period = hz_to_period_ns(args.degrade_pub_hz);
 
     const auto start_tp = SteadyClock::now();
+    const std::uint64_t start_mono_ns = now_mono_ns();
     auto next_poll      = start_tp;
     auto next_pub       = start_tp;
     auto next_print     = start_tp;
@@ -343,75 +308,37 @@ int main(int argc, char** argv)
         const bool pub_enabled = (pub_period.count() > 0);
         if (pub_enabled && now_tp >= next_pub) {
             advance_next(next_pub, now_tp, pub_period);
-
-            // warmup window
-            const auto elapsed_ms =
-                std::chrono::duration_cast<std::chrono::milliseconds>(now_tp - start_tp).count();
-            const bool in_warmup = (elapsed_ms < static_cast<long long>(args.warmup_ms));
-
-            // staleness based on nav shm publisher mono timestamp
             const std::uint64_t now_ns = now_mono_ns();
-            const std::uint64_t age_ms_from_nav_pub = (last_nav_pub_mono_ns == 0)
-                ? UINT64_MAX
-                : (now_ns - last_nav_pub_mono_ns) / 1000000ull;
-
-            const bool no_nav_yet = !has_last_view;
-            const bool stale = (!in_warmup) &&
-                               (age_ms_from_nav_pub != UINT64_MAX) &&
-                               (age_ms_from_nav_pub > args.max_age_ms);
-
-            // decide output
-            bool do_publish = true;
-            bool is_degrade = false;
-            shared::msg::NavStateView out{};
-
-            const bool publish_diagnostic_only = stale || no_nav_yet;
-
-            if (!publish_diagnostic_only) {
-                out = last_view;
-                is_degrade = (out.valid == 0) || (out.degraded != 0);
-            } else {
-                is_degrade = true;
-                if (stale) ++cnt_stale;
-
-                if (!args.publish_when_stale) {
-                    do_publish = false;
-                } else {
-                    // stale/no-data 诊断帧可以降频，但不能再把旧 payload 当成当前有效状态。
-                    if (degrade_period.count() > 0) {
-                        if (now_tp < next_degrade) {
-                            do_publish = false;
-                        } else {
-                            advance_next(next_degrade, now_tp, degrade_period);
-                        }
-                    }
-
-                    if (do_publish) {
-                        out = make_stale_view(has_last_view ? &last_view : nullptr);
-                    }
-                }
+            bool diagnostic_slot_ready = true;
+            if (degrade_period.count() > 0 && now_tp < next_degrade) {
+                diagnostic_slot_ready = false;
             }
 
-            if (do_publish) {
-                // === publish timestamp (single source of truth) ===
-                const std::uint64_t pub_mono_ns = now_mono_ns();
-                fill_publish_fields(out, pub_mono_ns);
+            comm_gcs::ipc::nav::NavViewDaemonPolicyConfig policy_cfg{};
+            policy_cfg.max_age_ms = args.max_age_ms;
+            policy_cfg.warmup_ms = args.warmup_ms;
+            policy_cfg.publish_when_stale = args.publish_when_stale;
 
-                // stale/no-data 诊断帧必须显式无效，并标记为桥接层 stale。
-                if (publish_diagnostic_only) {
-                    out.valid = 0;
-                    out.stale = 1;
-                    out.degraded = 1;
-                    out.nav_state = shared::msg::NavRunState::kInvalid;
-                    out.health = shared::msg::NavHealth::INVALID;
-                    if (out.fault_code == shared::msg::NavFaultCode::kNone) {
-                        out.fault_code = shared::msg::NavFaultCode::kNavViewStale;
-                    }
-                }
+            const auto decision = comm_gcs::ipc::nav::evaluate_nav_view_publish(
+                has_last_view ? &last_view : nullptr,
+                last_nav_pub_mono_ns,
+                start_mono_ns,
+                now_ns,
+                policy_cfg,
+                diagnostic_slot_ready);
 
-                if (nav_pub.publish(out)) {
+            if (decision.stale_triggered) {
+                ++cnt_stale;
+            }
+
+            if (decision.publish && decision.diagnostic_only && degrade_period.count() > 0) {
+                advance_next(next_degrade, now_tp, degrade_period);
+            }
+
+            if (decision.publish) {
+                if (nav_pub.publish(decision.out)) {
                     ++cnt_pub;
-                    if (is_degrade) ++cnt_pub_degrade;
+                    if (decision.degraded_publish) ++cnt_pub_degrade;
                 } else {
                     std::cerr << "[nav_viewd][WARN] publish failed\n";
                 }

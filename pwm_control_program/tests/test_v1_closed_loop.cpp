@@ -253,6 +253,43 @@ int test_guard_rejects_aligning_auto_nav()
     return 0;
 }
 
+int test_guard_rejects_stale_auto_nav()
+{
+    cc::ControlGuard guard(cc::ControlGuardConfig{});
+    cc::ControlState state{};
+
+    cc::ControlIntent arm{};
+    arm.cmd_seq = 1;
+    arm.stamp_ns = 1;
+    arm.ttl_ms = 100;
+    arm.valid = true;
+    arm.has_arm_cmd = true;
+    arm.arm = true;
+    TEST_CHECK(guard.step(1, state, nullptr, arm).armed);
+
+    auto nav = make_auto_ready_nav(true);
+    nav.valid = 0;
+    nav.stale = 1;
+    nav.nav_state = shared::msg::NavRunState::kInvalid;
+    nav.health = shared::msg::NavHealth::INVALID;
+    nav.fault_code = shared::msg::NavFaultCode::kNavViewStale;
+
+    cc::ControlIntent auto_req{};
+    auto_req.cmd_seq = 2;
+    auto_req.stamp_ns = 2;
+    auto_req.ttl_ms = 100;
+    auto_req.valid = true;
+    auto_req.has_mode_request = true;
+    auto_req.mode_request = cc::ControlMode::kAuto;
+
+    const auto out = guard.step(2, state, &nav, auto_req);
+    TEST_EQ(static_cast<int>(out.effective_mode),
+            static_cast<int>(cc::ControlMode::kFailsafe));
+    TEST_EQ(static_cast<int>(out.failsafe),
+            static_cast<int>(cc::FailsafeAction::kZeroOutput));
+    return 0;
+}
+
 int test_guard_allows_degraded_auto_nav()
 {
     cc::ControlGuard guard(cc::ControlGuardConfig{});
@@ -477,6 +514,8 @@ int main()
     rc = test_estop_latches();
     if (rc != 0) return rc;
     rc = test_guard_rejects_aligning_auto_nav();
+    if (rc != 0) return rc;
+    rc = test_guard_rejects_stale_auto_nav();
     if (rc != 0) return rc;
     rc = test_guard_allows_degraded_auto_nav();
     if (rc != 0) return rc;
