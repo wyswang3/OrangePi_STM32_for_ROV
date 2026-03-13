@@ -5,6 +5,7 @@
 #include <thread>
 
 #include "gateway/IPC/nav/nav_view_publisher_shm.hpp"
+#include "gateway/IPC/nav/nav_view_builder.hpp"
 #include "io/nav/nav_view_shm_source.hpp"
 
 namespace {
@@ -121,6 +122,51 @@ int test_source_marks_overage_as_stale()
     return 0;
 }
 
+int test_navstate_to_control_preserves_time_contract()
+{
+    const std::string shm_name = unique_shm_name();
+
+    comm_gcs::ipc::nav::NavViewPublisherShm pub;
+    comm_gcs::ipc::nav::NavViewPublisherShm::Config pcfg{};
+    pcfg.enable = true;
+    pcfg.shm_name = shm_name;
+    TEST_CHECK(pub.init(pcfg));
+
+    shared::msg::NavState nav{};
+    nav.t_ns = now_mono_ns() - 200'000'000ull;
+    nav.age_ms = 200;
+    nav.valid = 1;
+    nav.stale = 0;
+    nav.degraded = 0;
+    nav.nav_state = shared::msg::NavRunState::kOk;
+    nav.health = shared::msg::NavHealth::OK;
+    nav.fault_code = shared::msg::NavFaultCode::kNone;
+    nav.pos[0] = 1.0;
+    nav.vel[0] = 0.1;
+
+    shared::msg::NavStateView wire = comm_gcs::ipc::nav::NavViewBuilder::build(nav);
+    TEST_EQ(wire.stamp_ns, nav.t_ns);
+    TEST_EQ(wire.age_ms, nav.age_ms);
+    TEST_CHECK(pub.publish(wire));
+
+    rovctrl::io::nav::NavViewShmSource src;
+    rovctrl::io::nav::NavViewShmSource::Config scfg{};
+    scfg.enable = true;
+    scfg.shm_name = shm_name;
+    scfg.max_age_ms = 1000;
+    TEST_CHECK(src.init(scfg));
+
+    rovctrl::io::NavStateView out{};
+    TEST_CHECK(src.read_latest(out));
+    TEST_CHECK(out.has_snapshot());
+    TEST_EQ(out.payload().stamp_ns, nav.t_ns);
+    TEST_EQ(out.payload().mono_ns, out.pub_mono_ns);
+    TEST_CHECK(out.payload().age_ms >= nav.age_ms);
+    TEST_EQ(out.total_age_ms(), out.payload().age_ms);
+    TEST_CHECK(out.payload().valid == 1);
+    return 0;
+}
+
 } // namespace
 
 int main()
@@ -129,6 +175,8 @@ int main()
     rc = test_invalid_snapshot_is_not_dropped();
     if (rc != 0) return rc;
     rc = test_source_marks_overage_as_stale();
+    if (rc != 0) return rc;
+    rc = test_navstate_to_control_preserves_time_contract();
     if (rc != 0) return rc;
 
     std::cout << "[test_nav_view_shm_source] all tests passed.\n";

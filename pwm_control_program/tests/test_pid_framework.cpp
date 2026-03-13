@@ -13,6 +13,7 @@
 #include "controllers/controller_manager.hpp"
 #include "controllers/manual_controller.hpp"
 #include "controllers/pid_controller.hpp"
+#include "io/nav/nav_state_view.hpp"
 #include "shared/msg/telemetry_frame_v2.hpp"
 
 namespace {
@@ -562,6 +563,38 @@ int test_pid_software_chain_smoke()
     return 0;
 }
 
+int test_telemetry_preserves_total_nav_age_semantics()
+{
+    rovctrl::io::NavStateView nav_snapshot{};
+    nav_snapshot.wire.valid = 1;
+    nav_snapshot.wire.stale = 0;
+    nav_snapshot.wire.degraded = 0;
+    nav_snapshot.wire.nav_state = shared::msg::NavRunState::kOk;
+    nav_snapshot.wire.health = shared::msg::NavHealth::OK;
+    nav_snapshot.wire.stamp_ns = 1'000'000'000ull;
+    nav_snapshot.wire.mono_ns = 1'120'000'000ull;
+    nav_snapshot.wire.age_ms = 150;
+    nav_snapshot.pub_mono_ns = nav_snapshot.wire.mono_ns;
+    nav_snapshot.age_ms_local = 25;
+
+    cc::TelemetryBuildInput build_input{};
+    build_input.stamp_ns = 1'200'000'000ull;
+    build_input.nav_snapshot = &nav_snapshot;
+    build_input.nav_age_ms = nav_snapshot.total_age_ms();
+
+    shared::msg::TelemetryFrameV2 frame{};
+    fill_telemetry_frame_v2(frame, build_input);
+
+    TEST_EQ(frame.stamp_ns, build_input.stamp_ns);
+    TEST_EQ(frame.system.nav_valid, 1u);
+    TEST_EQ(frame.system.nav_state,
+            static_cast<std::uint8_t>(shared::msg::RuntimeNavState::kOk));
+    TEST_EQ(frame.system.nav_age_ms, nav_snapshot.total_age_ms());
+    TEST_EQ(frame.system.nav_stale, 0u);
+    TEST_EQ(frame.system.nav_degraded, 0u);
+    return 0;
+}
+
 } // namespace
 
 int main()
@@ -586,6 +619,8 @@ int main()
     rc = test_app_context_controller_default_overrides_modes_default();
     if (rc != 0) return rc;
     rc = test_pid_software_chain_smoke();
+    if (rc != 0) return rc;
+    rc = test_telemetry_preserves_total_nav_age_semantics();
     if (rc != 0) return rc;
 
     std::cout << "[test_pid_framework] all tests passed.\n";

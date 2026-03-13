@@ -61,6 +61,7 @@ int test_builder_preserves_degraded_valid_semantics()
     in.valid = 1;
     in.stale = 0;
     in.degraded = 1;
+    in.age_ms = 25;
     in.nav_state = shared::msg::NavRunState::kDegraded;
     in.health = shared::msg::NavHealth::DEGRADED;
     in.fault_code = shared::msg::NavFaultCode::kNone;
@@ -72,6 +73,8 @@ int test_builder_preserves_degraded_valid_semantics()
     const auto out = comm_gcs::ipc::nav::NavViewBuilder::build(in);
     TEST_CHECK(out.valid == 1);
     TEST_CHECK(out.degraded == 1);
+    TEST_EQ(out.stamp_ns, in.t_ns);
+    TEST_EQ(out.age_ms, in.age_ms);
     TEST_EQ(out.nav_state, shared::msg::NavRunState::kDegraded);
     TEST_EQ(out.health, shared::msg::NavHealth::DEGRADED);
     TEST_EQ(out.fault_code, shared::msg::NavFaultCode::kNone);

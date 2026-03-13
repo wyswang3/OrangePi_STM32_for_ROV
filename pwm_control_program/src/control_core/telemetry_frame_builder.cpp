@@ -82,6 +82,8 @@ void fill_telemetry_frame_v2(shared::msg::TelemetryFrameV2& frame,
     frame.version = shared::msg::kTelemetryFrameV2WireVersion;
     frame.payload_size = static_cast<std::uint32_t>(sizeof(shared::msg::TelemetryFrameV2));
     frame.seq += 1;
+    // Telemetry stamp_ns is the control-core publish stamp for this frame.
+    // Nav sample time stays inside nav_snapshot->payload().stamp_ns/nav_age_ms.
     frame.stamp_ns = input.stamp_ns;
     frame.valid = 1;
 
@@ -173,6 +175,7 @@ void fill_telemetry_frame_v2(shared::msg::TelemetryFrameV2& frame,
         const auto& nav = input.nav_snapshot->payload();
         frame.system.nav_valid = nav.valid;
         frame.system.nav_health = static_cast<std::uint8_t>(nav.health);
+        // nav_age_ms must already be the cumulative age seen by control after local SHM hop.
         frame.system.nav_age_ms = input.nav_age_ms;
         frame.system.nav_stale = nav.stale;
         frame.system.nav_degraded = nav.degraded;
