@@ -52,6 +52,7 @@ struct TelemetryTimelineLogger::Impl {
                 << "telemetry_stamp_ns,telemetry_seq,active_mode,armed,estop_latched"
                 << ",failsafe_active,controller_name,desired_controller"
                 << ",nav_valid,nav_state,nav_health,nav_stale,nav_degraded,nav_age_ms"
+                << ",nav_fault_code,nav_status_flags"
                 << ",health_state,degraded,fault_state,last_fault_code"
                 << ",stm32_link_state,pwm_link_state,heartbeat_age_ms"
                 << ",cmd_status,cmd_fault_code,event_seq,event_code,event_fault_code"
@@ -88,6 +89,8 @@ struct TelemetryTimelineLogger::Impl {
             << "," << static_cast<unsigned>(frame.system.nav_stale)
             << "," << static_cast<unsigned>(frame.system.nav_degraded)
             << "," << frame.system.nav_age_ms
+            << "," << frame.system.nav_fault_code
+            << "," << frame.system.nav_status_flags
             << "," << static_cast<unsigned>(frame.system.health_state)
             << "," << static_cast<unsigned>(frame.system.degraded)
             << "," << static_cast<unsigned>(frame.system.fault_state)

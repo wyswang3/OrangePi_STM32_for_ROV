@@ -592,6 +592,8 @@ int test_telemetry_preserves_total_nav_age_semantics()
     TEST_EQ(frame.system.nav_age_ms, nav_snapshot.total_age_ms());
     TEST_EQ(frame.system.nav_stale, 0u);
     TEST_EQ(frame.system.nav_degraded, 0u);
+    TEST_EQ(frame.system.nav_fault_code, 0u);
+    TEST_EQ(frame.system.nav_status_flags, 0u);
     return 0;
 }
 

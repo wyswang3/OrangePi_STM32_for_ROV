@@ -354,6 +354,10 @@ int test_reconnecting_nav_fault_reaches_control_and_telemetry()
     TEST_EQ(frame.system.nav_stale, 0);
     TEST_EQ(frame.system.nav_degraded, 0);
     TEST_EQ(frame.system.nav_age_ms, nav_view.total_age_ms());
+    TEST_EQ(frame.system.nav_fault_code,
+            static_cast<std::uint16_t>(shared::msg::NavFaultCode::kImuDisconnected));
+    TEST_CHECK(shared::msg::nav_flag_has(frame.system.nav_status_flags,
+                                         shared::msg::NAV_FLAG_IMU_RECONNECTING));
     TEST_EQ(frame.system.health_state,
             static_cast<std::uint8_t>(shared::msg::HealthState::kFault));
     return 0;
@@ -415,6 +419,8 @@ int test_daemon_stale_publish_clears_old_kinematics_and_rejects_auto()
     TEST_EQ(frame.system.nav_stale, 1);
     TEST_EQ(frame.system.nav_degraded, 1);
     TEST_CHECK(frame.system.nav_age_ms >= 120u);
+    TEST_EQ(frame.system.nav_fault_code,
+            static_cast<std::uint16_t>(shared::msg::NavFaultCode::kNavViewStale));
     return 0;
 }
 

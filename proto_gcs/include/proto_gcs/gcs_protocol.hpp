@@ -177,6 +177,9 @@ struct AckPayload final {
  *   - health_state keeps shared::msg::HealthState numeric values.
  *   - command_status keeps shared::msg::CommandResultCode numeric values.
  *   - last_fault_code / command_fault_code keep shared::msg::FaultCode values.
+ *   - nav_fault_code keeps shared::msg::NavFaultCode values.
+ *   - nav_status_flags keeps shared::msg::NavStatusFlags values so UI can
+ *     explain reconnecting / mismatch / offline causes without guessing.
  *   - t_ns is the control-core telemetry stamp_ns carried through this hop.
  */
 struct StatusTelemetry final {
@@ -200,7 +203,8 @@ struct StatusTelemetry final {
     std::uint16_t last_fault_code     = 0; // shared::msg::FaultCode
 
     std::uint16_t command_fault_code  = 0; // shared::msg::FaultCode
-    std::uint16_t reserved1           = 0;
+    std::uint16_t nav_fault_code      = 0; // shared::msg::NavFaultCode
+    std::uint16_t nav_status_flags    = 0; // shared::msg::NavStatusFlags
 
     std::uint32_t consecutive_failures = 0;
     std::uint32_t auto_fail_limit      = 0;
@@ -253,7 +257,7 @@ static_assert(sizeof(SetModeCmd)     == 20, "SetModeCmd size must be 20");
 static_assert(sizeof(SetDofCmd)      == 24, "SetDofCmd size must be 24");
 static_assert(sizeof(EstopCmd)       == 4,  "EstopCmd size must be 4 bytes");
 static_assert(sizeof(MotorTestCmd)   == 16, "MotorTestCmd size must be 16 bytes");
-static_assert(sizeof(StatusTelemetry) == 80, "StatusTelemetry size must be 80 bytes");
+static_assert(sizeof(StatusTelemetry) == 82, "StatusTelemetry size must be 82 bytes");
 
 // ============================================================================
 // CRC32C API (implementation in .cpp)

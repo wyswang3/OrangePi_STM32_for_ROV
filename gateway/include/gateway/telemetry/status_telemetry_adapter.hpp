@@ -45,6 +45,8 @@ inline rovctrl::io::gcs::StatusTelemetry build_status_telemetry(
     out.command_status = frame.last_command_result.status;
     out.last_fault_code = frame.system.last_fault_code;
     out.command_fault_code = frame.last_command_result.fault_code;
+    out.nav_fault_code = frame.system.nav_fault_code;
+    out.nav_status_flags = frame.system.nav_status_flags;
     out.status_seq = static_cast<std::uint32_t>(frame.seq & 0xFFFFFFFFu);
     out.command_cmd_seq = frame.last_command_result.cmd_seq;
     rovctrl::io::gcs::write_cstr(out.active_controller,

@@ -118,10 +118,12 @@ if (NOT TARGET shared_msgs)
     )
 endif()
 
-# ---- proto_gcs (reuse if exists; fallback INTERFACE include-only) ----
+# ---- proto_gcs (reuse if exists; fallback minimal static impl) ----
 if (NOT TARGET proto_gcs)
-    add_library(proto_gcs INTERFACE)
-    target_include_directories(proto_gcs INTERFACE "${PROTO_GCS_DIR}/include")
+    add_library(proto_gcs STATIC
+        "${PROTO_GCS_DIR}/src/crc32c.cpp"
+    )
+    target_include_directories(proto_gcs PUBLIC "${PROTO_GCS_DIR}/include")
 else()
     # Ensure downstream can include "proto_gcs/gcs_protocol.hpp"
     get_target_property(_proto_gcs_inc proto_gcs INTERFACE_INCLUDE_DIRECTORIES)
@@ -496,6 +498,22 @@ if (PWMCTRL_BUILD_TESTS)
     endif()
 
     add_test(NAME pwmctrl_test_nav_reconnect_pipeline COMMAND test_nav_reconnect_pipeline)
+
+    add_executable(test_control_loop_logger
+        tests/test_control_loop_logger.cpp
+        src/io/log/control_loop_logger.cpp
+        src/platform/timebase.cpp
+    )
+
+    target_include_directories(test_control_loop_logger PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/include"
+    )
+
+    target_link_libraries(test_control_loop_logger PRIVATE
+        shared_msgs
+    )
+
+    add_test(NAME pwmctrl_test_control_loop_logger COMMAND test_control_loop_logger)
 
     add_executable(test_telemetry_timeline_logger
         tests/test_telemetry_timeline_logger.cpp

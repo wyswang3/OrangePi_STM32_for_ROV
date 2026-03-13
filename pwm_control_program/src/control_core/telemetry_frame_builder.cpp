@@ -180,6 +180,8 @@ void fill_telemetry_frame_v2(shared::msg::TelemetryFrameV2& frame,
         frame.system.nav_stale = nav.stale;
         frame.system.nav_degraded = nav.degraded;
         frame.system.nav_state = telemetry_runtime_nav_state(nav.nav_state);
+        frame.system.nav_fault_code = static_cast<std::uint16_t>(nav.fault_code);
+        frame.system.nav_status_flags = nav.status_flags;
         nav_fault = (nav.valid == 0) || (nav.stale != 0) ||
                     (nav.fault_code != shared::msg::NavFaultCode::kNone);
     } else {
@@ -190,6 +192,9 @@ void fill_telemetry_frame_v2(shared::msg::TelemetryFrameV2& frame,
         frame.system.nav_degraded = 1;
         frame.system.nav_state =
             static_cast<std::uint8_t>(shared::msg::RuntimeNavState::kInvalid);
+        frame.system.nav_fault_code =
+            static_cast<std::uint16_t>(shared::msg::NavFaultCode::kNoData);
+        frame.system.nav_status_flags = shared::msg::NAV_FLAG_NONE;
         nav_fault = true;
     }
 

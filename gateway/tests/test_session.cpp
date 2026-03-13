@@ -12,6 +12,7 @@
 #include "gateway/session/gcs_session.hpp"
 #include "gateway/telemetry/status_telemetry_adapter.hpp"
 #include "proto_gcs/gcs_protocol.hpp"
+#include "shared/msg/nav_state.hpp"
 #include "shared/msg/telemetry_frame_v2.hpp"
 
 namespace {
@@ -408,6 +409,11 @@ static int test_status_adapter_maps_runtime_state()
     frame.system.nav_valid = 0;
     frame.system.nav_stale = 1;
     frame.system.nav_degraded = 1;
+    frame.system.nav_fault_code =
+        static_cast<std::uint16_t>(shared::msg::NavFaultCode::kImuDisconnected);
+    frame.system.nav_status_flags =
+        shared::msg::NAV_FLAG_IMU_RECONNECTING |
+        shared::msg::NAV_FLAG_DVL_BIND_MISMATCH;
     frame.system.nav_state =
         static_cast<std::uint8_t>(shared::msg::RuntimeNavState::kInvalid);
     frame.system.fault_state = 1;
@@ -451,6 +457,11 @@ static int test_status_adapter_maps_runtime_state()
             static_cast<std::uint16_t>(shared::msg::FaultCode::kNavUntrusted));
     TEST_EQ(st.command_fault_code,
             static_cast<std::uint16_t>(shared::msg::FaultCode::kNavUntrusted));
+    TEST_EQ(st.nav_fault_code,
+            static_cast<std::uint16_t>(shared::msg::NavFaultCode::kImuDisconnected));
+    TEST_EQ(st.nav_status_flags,
+            static_cast<std::uint16_t>(shared::msg::NAV_FLAG_IMU_RECONNECTING |
+                                       shared::msg::NAV_FLAG_DVL_BIND_MISMATCH));
     TEST_EQ(st.status_seq, 1234u);
     TEST_EQ(st.command_cmd_seq, 77ull);
     TEST_EQ(st.consecutive_failures, 2u);

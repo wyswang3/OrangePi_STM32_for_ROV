@@ -119,6 +119,7 @@ add_library(gateway_core
 
 target_link_libraries(gateway_core
     PUBLIC gateway_proto
+           proto_gcs
 )
 
 # POSIX 线程
@@ -189,6 +190,6 @@ if (GATEWAY_BUILD_TESTS)
     add_test(NAME gateway_test_nav_view_policy COMMAND test_nav_view_policy)
 
     add_executable(test_session tests/test_session.cpp)
-    target_link_libraries(test_session PRIVATE gateway_core)
+    target_link_libraries(test_session PRIVATE gateway_core proto_gcs)
     add_test(NAME gateway_test_session COMMAND test_session)
 endif()
