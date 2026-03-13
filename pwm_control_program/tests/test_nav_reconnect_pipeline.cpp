@@ -2,10 +2,14 @@
 #include <chrono>
 #include <cstdint>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <memory>
 #include <optional>
+#include <stdexcept>
 #include <string>
+#include <vector>
 
 #include <fcntl.h>
 #include <sys/mman.h>
@@ -14,10 +18,12 @@
 
 #include "control_core/control_guard.hpp"
 #include "control_core/telemetry_frame_builder.hpp"
+#include "gateway/telemetry/status_telemetry_adapter.hpp"
 #include "gateway/IPC/nav/nav_state_subscriber_shm.hpp"
 #include "gateway/IPC/nav/nav_view_builder.hpp"
 #include "gateway/IPC/nav/nav_view_policy.hpp"
 #include "gateway/IPC/nav/nav_view_publisher_shm.hpp"
+#include "io/log/telemetry_timeline_logger.hpp"
 #include "io/nav/nav_view_shm_source.hpp"
 #include "shared/msg/nav_state.hpp"
 
@@ -81,6 +87,12 @@ std::uint64_t unique_now_ns()
 std::string unique_shm_name(const char* prefix)
 {
     return std::string("/") + prefix + "_" + std::to_string(unique_now_ns());
+}
+
+std::filesystem::path unique_temp_path(const char* prefix, const char* suffix)
+{
+    return std::filesystem::temp_directory_path() /
+           (std::string(prefix) + "_" + std::to_string(unique_now_ns()) + suffix);
 }
 
 class NavStateShmWriter final {
@@ -266,6 +278,54 @@ shared::msg::NavState make_nav_ok(std::uint64_t stamp_ns)
     return nav;
 }
 
+shared::msg::NavState make_nav_mismatch(std::uint64_t stamp_ns)
+{
+    shared::msg::NavState nav{};
+    nav.t_ns = stamp_ns;
+    nav.age_ms = 30;
+    nav.valid = 0;
+    nav.stale = 0;
+    nav.degraded = 0;
+    nav.nav_state = shared::msg::NavRunState::kInvalid;
+    nav.health = shared::msg::NavHealth::INVALID;
+    nav.fault_code = shared::msg::NavFaultCode::kDvlDeviceMismatch;
+    nav.status_flags = shared::msg::NAV_FLAG_DVL_BIND_MISMATCH;
+    nav.sensor_mask = shared::msg::NAV_SENSOR_IMU;
+    return nav;
+}
+
+void write_nav_state_records(const std::filesystem::path&                     path,
+                             const std::vector<shared::msg::NavState>& records)
+{
+    std::ofstream out(path, std::ios::binary | std::ios::trunc);
+    if (!out.is_open()) {
+        throw std::runtime_error("cannot open nav_state replay file");
+    }
+    out.write(reinterpret_cast<const char*>(records.data()),
+              static_cast<std::streamsize>(records.size() * sizeof(shared::msg::NavState)));
+}
+
+std::vector<shared::msg::NavState> read_nav_state_records(const std::filesystem::path& path)
+{
+    std::ifstream in(path, std::ios::binary);
+    if (!in.is_open()) {
+        throw std::runtime_error("cannot read nav_state replay file");
+    }
+
+    in.seekg(0, std::ios::end);
+    const auto size = static_cast<std::size_t>(in.tellg());
+    in.seekg(0, std::ios::beg);
+    if ((size % sizeof(shared::msg::NavState)) != 0) {
+        throw std::runtime_error("nav_state replay file has unexpected size");
+    }
+
+    std::vector<shared::msg::NavState> records(size / sizeof(shared::msg::NavState));
+    if (!records.empty()) {
+        in.read(reinterpret_cast<char*>(records.data()), static_cast<std::streamsize>(size));
+    }
+    return records;
+}
+
 cc::ControlIntent make_arm_cmd()
 {
     cc::ControlIntent arm{};
@@ -424,6 +484,128 @@ int test_daemon_stale_publish_clears_old_kinematics_and_rejects_auto()
     return 0;
 }
 
+int test_replay_bundle_file_reaches_status_telemetry_and_logger()
+{
+    const std::string nav_state_shm = unique_shm_name("codex_nav_state_replay");
+    const std::string nav_view_shm = unique_shm_name("codex_nav_view_replay");
+    const auto replay_file = unique_temp_path("nav_state_window", ".bin");
+    const auto log_root = unique_temp_path("telemetry_replay", "");
+    std::filesystem::create_directories(log_root);
+
+    const std::vector<shared::msg::NavState> recorded{
+        make_nav_ok(1'000'000'000ull),
+        make_nav_reconnecting(1'050'000'000ull),
+        make_nav_mismatch(1'100'000'000ull),
+    };
+    write_nav_state_records(replay_file, recorded);
+
+    NavStateShmWriter writer(nav_state_shm);
+    TEST_CHECK(writer.init());
+
+    NavViewDaemonHarness daemon{};
+    daemon.policy.max_age_ms = 80;
+    daemon.policy.warmup_ms = 0;
+    daemon.policy.publish_when_stale = true;
+    TEST_CHECK(daemon.init(nav_state_shm, nav_view_shm));
+
+    rovctrl::io::nav::NavViewShmSource src;
+    rovctrl::io::nav::NavViewShmSource::Config scfg{};
+    scfg.enable = true;
+    scfg.shm_name = nav_view_shm;
+    scfg.max_age_ms = 1000;
+    TEST_CHECK(src.init(scfg));
+
+    rovctrl::io::TelemetryTimelineLogger logger;
+    TEST_CHECK(logger.init(log_root.string(), "replay"));
+
+    const auto replayed = read_nav_state_records(replay_file);
+    TEST_EQ(replayed.size(), recorded.size());
+
+    writer.write(replayed[0], replayed[0].t_ns, 0);
+    TEST_CHECK(daemon.step(replayed[0].t_ns + 1'000'000ull).has_value());
+
+    writer.write(replayed[1], replayed[1].t_ns, 0);
+    TEST_CHECK(daemon.step(replayed[1].t_ns + 1'000'000ull).has_value());
+
+    rovctrl::io::NavStateView reconnect_view{};
+    TEST_CHECK(src.read_latest(reconnect_view));
+    TEST_EQ(reconnect_view.payload().valid, 0);
+    TEST_EQ(reconnect_view.payload().fault_code, shared::msg::NavFaultCode::kImuDisconnected);
+    TEST_CHECK(shared::msg::nav_flag_has(
+        reconnect_view.payload().status_flags, shared::msg::NAV_FLAG_IMU_RECONNECTING));
+
+    writer.write(replayed[2], replayed[2].t_ns, 0);
+    TEST_CHECK(daemon.step(replayed[2].t_ns + 1'000'000ull).has_value());
+
+    rovctrl::io::NavStateView mismatch_view{};
+    TEST_CHECK(src.read_latest(mismatch_view));
+    TEST_EQ(mismatch_view.payload().valid, 0);
+    TEST_EQ(mismatch_view.payload().fault_code, shared::msg::NavFaultCode::kDvlDeviceMismatch);
+    TEST_CHECK(shared::msg::nav_flag_has(
+        mismatch_view.payload().status_flags, shared::msg::NAV_FLAG_DVL_BIND_MISMATCH));
+
+    cc::ControlGuard guard(cc::ControlGuardConfig{});
+    cc::ControlState state{};
+    TEST_CHECK(guard.step(1, state, nullptr, make_arm_cmd()).armed);
+    const auto out = guard.step(2, state, &mismatch_view.payload(), make_auto_cmd());
+    TEST_EQ(static_cast<int>(out.effective_mode), static_cast<int>(cc::ControlMode::kFailsafe));
+    TEST_EQ(static_cast<int>(out.failsafe), static_cast<int>(cc::FailsafeAction::kZeroOutput));
+
+    auto frame = make_telemetry_from_nav(mismatch_view, out.effective_mode, true);
+    frame.seq = 7;
+    frame.last_command_result.cmd_seq = 22;
+    frame.last_command_result.intent_id = 22;
+    frame.last_command_result.stamp_ns = replayed[2].t_ns + 2'000'000ull;
+    frame.last_command_result.status =
+        static_cast<std::uint8_t>(shared::msg::CommandResultCode::kRejected);
+    frame.last_command_result.fault_code =
+        static_cast<std::uint16_t>(shared::msg::FaultCode::kNavUntrusted);
+    logger.log_frame(frame);
+
+    const auto status = comm_gcs::telemetry::build_status_telemetry(frame, true, true);
+    TEST_EQ(status.nav_fault_code,
+            static_cast<std::uint16_t>(shared::msg::NavFaultCode::kDvlDeviceMismatch));
+    TEST_EQ(status.nav_status_flags, shared::msg::NAV_FLAG_DVL_BIND_MISMATCH);
+    TEST_EQ(status.command_status,
+            static_cast<std::uint8_t>(shared::msg::CommandResultCode::kRejected));
+    TEST_EQ(status.command_fault_code,
+            static_cast<std::uint16_t>(shared::msg::FaultCode::kNavUntrusted));
+
+    TEST_CHECK(daemon.step(replayed[2].t_ns + 250'000'000ull).has_value());
+    rovctrl::io::NavStateView stale_view{};
+    TEST_CHECK(src.read_latest(stale_view));
+    TEST_EQ(stale_view.payload().stale, 1);
+    TEST_EQ(stale_view.payload().fault_code, shared::msg::NavFaultCode::kNavViewStale);
+
+    logger.close();
+
+    std::filesystem::path timeline_file;
+    std::filesystem::path events_file;
+    for (const auto& entry : std::filesystem::directory_iterator(log_root)) {
+        const auto name = entry.path().filename().string();
+        if (name.find("_timeline_") != std::string::npos) {
+            timeline_file = entry.path();
+        } else if (name.find("_events_") != std::string::npos) {
+            events_file = entry.path();
+        }
+    }
+    TEST_CHECK(!timeline_file.empty());
+    TEST_CHECK(!events_file.empty());
+
+    std::ifstream timeline_in(timeline_file);
+    std::string header;
+    std::string row;
+    std::getline(timeline_in, header);
+    std::getline(timeline_in, row);
+    TEST_CHECK(row.find(",14,512,") != std::string::npos);
+    TEST_CHECK(row.find(",2,4,") != std::string::npos);
+
+    std::error_code ec;
+    std::filesystem::remove(replay_file, ec);
+    std::filesystem::remove_all(log_root, ec);
+    return 0;
+}
+
 } // namespace
 
 int main()
@@ -433,6 +615,10 @@ int main()
         return rc;
     }
     rc = test_daemon_stale_publish_clears_old_kinematics_and_rejects_auto();
+    if (rc != 0) {
+        return rc;
+    }
+    rc = test_replay_bundle_file_reaches_status_telemetry_and_logger();
     if (rc != 0) {
         return rc;
     }

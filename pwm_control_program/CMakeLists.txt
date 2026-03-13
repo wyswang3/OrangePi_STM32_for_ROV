@@ -474,6 +474,7 @@ if (PWMCTRL_BUILD_TESTS)
         tests/test_nav_reconnect_pipeline.cpp
         src/control_core/control_guard.cpp
         src/control_core/telemetry_frame_builder.cpp
+        src/io/log/telemetry_timeline_logger.cpp
         src/io/nav/nav_view_subscriber_shm.cpp
         src/io/nav/nav_view_shm_source.cpp
     )
