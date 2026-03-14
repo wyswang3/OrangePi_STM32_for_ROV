@@ -1,196 +1,133 @@
-下面为你对 **旧版 orangepi_send README** 进行**整体保留、结构升级、表达精炼、重点更清晰**的优化版本。
+# orangepi_send
 
-内容不改动核心逻辑，只提升专业度、可读性和工程表达。
+`orangepi_send` 是控制仓里的低级 PWM 后端与传输模块。
 
----
+它提供的是“如何安全地把归一化推进器指令变成可发送、可保护、可落到 STM32 的 PWM 数据”，而不是高层控制逻辑。
 
-# 📘 orangepi_send
+## 1. 模块定位
 
-香橙派（上位机） 与 STM32（下位机）之间的通信与 PWM 驱动控制模块
+在系统里，`orangepi_send` 位于：
 
-本模块实现了 **OrangePi → STM32 的可靠 PWM 控制链路**，提供 8 路推进器安全输出、心跳监控、通信协议解析与 CRC 校验，是整个 ROV 推进系统的底层执行单元。
-
----
-
-## 1. 系统概述
-
-### 功能目标
-
-* 上位机周期性发送 PWM 指令、心跳包
-* STM32 解析协议、校验 CRC、执行 PWM 输出
-* 通信中断或异常时自动进入 **安全保护模式**
-
----
-
-## 2. 系统架构
-
-### 硬件结构
-
-* **上位机**：OrangePi
-* **下位机**：STM32F407（或 F446）
-* **通信链路**：UDP over Ethernet（消息内容为“虚拟串口协议”）
-
-### 软件结构
-
-```
-Teleop / MPC 控制层
-        ↓
-PWM 控制层（安全保护）
-        ↓
-通信协议层（UDP）
-        ↓
-STM32 执行层（PWM 输出）
+```text
+pwm_control_program
+  -> PwmClient
+  -> orangepi_send
+  -> STM32
 ```
 
----
+它解决的是下面这些问题：
 
-## 3. 核心功能
+- 如何把目标推进器命令打包成协议帧
+- 如何通过 UDP 向下位机发送
+- 如何做限斜率、急停、回中和反向保护
+- 如何维持心跳与基础传输健康
 
-### 3.1 安全保护机制
+## 2. 当前主要文件
 
-| 机制           | 描述                      |
-| ------------ | ----------------------- |
-| **限斜率保护**    | 每周期最大 0.2% 变化，避免电流冲击    |
-| **A/B 分组输出** | 1–4、5–8 分组交替更新，降低瞬时电流峰值 |
-| **反向保护**     | 禁止跨越中位瞬间反转              |
-| **心跳监控**     | 500ms 无心跳自动回中位          |
-| **平滑急停**     | 可设置时间，实现占空比平滑归中         |
+### 头文件
 
-这些保护**硬性保证推进器安全**，不依赖上层算法是否正确。
+- `include/libpwm_host.h`
+  - OrangePi 侧 host API
+- `include/pwm_control.h`
+  - PWM 安全层 API
+- `include/protocol_pack.h` / `.hpp`
+  - 协议打包接口
+- `include/UdpSender.h`
+  - UDP 发送器
+- `include/PwmFrameBuilder.h`
+  - PWM 帧构造
+- `include/crc16_ccitt.h`
+  - CRC 校验
 
----
+### 源文件
 
-## 4. 通信协议（Protocol V1）
+- `src/libpwm_host.c`
+- `src/pwm_control.c`
+- `src/protocol_pack.c`
+- `src/UdpSender.cpp`
+- `src/PwmFrameBuilder.cpp`
+- `src/crc16_ccitt.cpp`
+- `src/main.cpp`
 
-### 帧结构
+## 3. 它负责什么，不负责什么
 
-```
-SOF(2B) | VER(1B) | MSG_ID(1B) | SEQ(2B) | TICKS(4B)
-LEN(2B) | PAYLOAD(N) | CRC16(2B)
-```
+负责：
 
-### 消息类型
+- 协议帧
+- UDP 发送
+- PWM 安全保护
+- 心跳与基础传输状态
 
-| 消息    | ID   | 描述         |
-| ----- | ---- | ---------- |
-| PWM控制 | 0x01 | 8 路 PWM 指令 |
-| 心跳    | 0x10 | 上位机心跳      |
-| 心跳应答  | 0x11 | STM32 回复   |
-| 紧急停止  | 0x20 | 平滑急停或立即急停  |
+不负责：
 
-### 校验方式
+- 手动模式 / 自动模式切换
+- GCS 会话
+- 导航可信度
+- 控制器计算
 
-* CRC16-CCITT-FALSE
-* STM32 端验证失败会丢弃并计入错误统计
+这些都属于上层。
 
----
+## 4. 当前最值得先看的代码
 
-## 5. 快速上手
+建议按这个顺序看：
 
-### 5.1 STM32 端准备
+1. `include/pwm_control.h`
+2. `src/pwm_control.c`
+3. `include/libpwm_host.h`
+4. `src/libpwm_host.c`
+5. `src/protocol_pack.c`
+6. `src/main.cpp`
 
-* Keil 或 CubeIDE 工程
-* UART5 DMA 接收通信数据
-* TIM1 / TIM4 输出 8 路 PWM
+这条路径最能帮助你理解“PwmClient 依赖了什么”。
 
-### 5.2 OrangePi 端编译
+## 5. 当前安全语义
+
+这里最关键的不是协议，而是安全层：
+
+- 限斜率
+- 回中
+- 心跳超时
+- 急停
+- 反向保护
+
+上层就算给出一组不平滑的目标，真正落到底层之前也要经过这里。
+
+所以如果你在 `pwm_control_program` 看到的是归一化命令，而在底层看到的是 duty 变化，中间的语义桥就在这里。
+
+## 6. 构建
+
+当前一般通过控制仓顶层一起构建：
 
 ```bash
-cd orangepi_send
-mkdir build && cd build
-cmake ..
-make -j4
+cd /home/wys/orangepi/UnderwaterRobotSystem/OrangePi_STM32_for_ROV
+cmake -S . -B build
+cmake --build build -j4
 ```
 
-生成：
+如果你单独进这个目录，也可以基于本目录的 `CMakeLists.txt` 做局部构建。
 
-```
-libpwm_host.a
-orangepi_send 可执行程序
-```
+## 7. 与上层的关系
 
-### 5.3 运行程序
+对上层来说，最重要的事实只有一个：
 
-```bash
-./orangepi_send 192.168.2.16 8000 51 1
-# 参数说明：目标IP，端口，控制频率（Hz），心跳频率（Hz）
-```
+`orangepi_send` 是后端，不是业务中心。
 
----
+如果你准备改这里，最好先确认你改的是：
 
-## 6. 测试流程
+- 传输
+- 协议
+- 安全层
 
-### 基础检测
+而不是偷偷把控制模式、GCS 或导航逻辑塞进来。
 
-1. **心跳延迟** < 10ms
-2. 超时 500ms 内自动回中
-3. CRC 错误时丢弃数据帧
-4. 8 通道 PWM 输出稳定，无毛刺
+## 8. 文档入口
 
-### 安全功能验证
+这个目录下已有几份更细的说明：
 
-* 限斜率保护
-* A/B 分组输出
-* 平滑急停（验证插值是否平滑）
+- `docs/control_stack_integration_and_safety.md`
+- `docs/protocol_v1.md`
+- `docs/pwm_control_layer_safety_overview.md`
+- `docs/handover_guide.md`
+- `docs/test_plan_en.md`
 
-### 异常场景测试
-
-* 拔网线（模拟丢包）
-* 强制关闭上位机程序
-* 发送错误长度 / 错误 CRC 帧
-
----
-
-## 7. 文档结构
-
-```
-docs/
-├── handover_guide.md                     # 工程交接文档
-├── protocol_v1.md                        # 通信协议说明
-├── pwm_control_layer_safety_overview.md  # 安全层机制
-├── test_plan_en.md                       # 测试说明
-└── pwm_control_architecture.md           # 设计架构
-```
-
----
-
-## 8. 工程价值
-
-### 安全性
-
-推进器绝不能失控，本模块内部完全隔离硬件安全，
-即使上层算法崩溃、网络丢包、延迟过大，也不会损坏推进器。
-
-### 可扩展性
-
-上位机可以接入：
-
-* Teleop 键盘控制
-* MPC 控制器
-* 强化学习策略
-* ROS 2 控制栈
-
-底层无需修改。
-
-### 可维护性
-
-* 独立 C 库 `libpwm_host.a`
-* 清晰的 API 接口
-* STM32 与 OrangePi 解耦良好
-
----
-
-## 9. 适用场景
-
-* 水下机器人推进系统
-* 多推进器协同控制
-* 需要高可靠性的 PWM 驱动平台
-* 科研机器人实验床架
-
----
-
-### ⚠️ **安全提醒**
-
-首次测试务必拆除螺旋桨，在安全环境下验证功能。
-
----
+如果你要做的是具体协议或安全层改动，这些文档比总 README 更直接。

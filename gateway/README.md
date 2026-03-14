@@ -1,215 +1,123 @@
-> 📌 阅读指引  
-> 如果你是 **ROV 操作员 / 控制算法开发者**，  
-> 而不是在做上位机通信或协议开发，  
-> 请优先阅读项目总 README 与 `pwm_control_program/README.md`：
->
-> - 项目总览：`../README.md`
-> - 控制主程序：`../pwm_control_program/README.md`
+# gateway
 
----
+`gateway` 是机器人侧的桥接层。
 
-# `comm_gcs` — Ground Control Station Communication Module
+它不做最终控制决策，也不直接做 PWM 输出；它负责把不同来源的数据流变成控制主线可以消费的 SHM 或状态视图。
 
-## 1. 模块定位（What & Why）
+## 1. gateway 的职责
 
-`comm_gcs` 是 **OrangePi_STM32_for_ROV 系统中的“上位机通信中枢”模块**，负责实现：
+当前 `gateway` 主要做三类事情：
 
-> **ROV ↔ 上位机（GCS）之间的可靠 UDP 通信、会话管理与协议编解码**
+- GCS UDP 会话与命令桥接
+- 导航状态到控制视图的转换
+- 调试/观测工具
 
-该模块**不直接参与控制算法、不直接操作 PWM、不依赖具体控制器实现**，其职责仅限于：
+可以把它理解成“运行时数据桥”和“边界适配层”。
 
-* 网络通信（UDP）
-* 数据包封装 / 校验 / 解包
-* 会话（Session）状态管理
-* 为上层模块提供**干净、结构化的控制与遥测数据接口**
+## 2. 当前最重要的两条链路
 
----
+### GCS 命令链
 
-## 2. 在系统架构中的位置
-
-整体系统中，`comm_gcs` 所处位置如下：
-
-```
-┌──────────────┐
-│   上位机 GCS  │
-│ (GUI / 手柄) │
-└──────┬───────┘
-       │ UDP
-┌──────▼──────────────────────────┐
-│            comm_gcs              │
-│  - UDP Server / Client           │
-│  - GCS Session                   │
-│  - Packet Codec                  │
-└──────┬──────────────────────────┘
-       │ 结构化数据（Intent / Telemetry）
-┌──────▼──────────────────────────┐
-│      pwm_control_program         │
-│  - GcsInputProvider              │
-│  - ControlGuard                  │
-│  - ControllerManager             │
-└─────────────────────────────────┘
+```text
+UDP packets
+  -> gcs_server
+  -> /rovctrl_gcs_intent_v1
+  -> pwm_control_program
 ```
 
-**重要原则：**
+`gcs_server` 是当前远程键盘/会话控制的主入口。
 
-* `comm_gcs` **不知道** 推进器、PWM、PID、MPC
-* `pwm_control_program` **不关心** UDP、CRC、Session 细节
-* 二者通过 **清晰的数据结构与接口解耦**
+### 导航视图链
 
----
-
-## 3. 目录结构说明
-
-```
-comm_gcs/
-├── include/
-│   └── comm_gcs/
-│       ├── udp_client.hpp        # UDP 客户端
-│       ├── udp_server.hpp        # UDP 服务端
-│       ├── udp_endpoint.hpp      # UDP endpoint 抽象
-│       └── session/
-│           └── gcs_session.hpp   # GCS 会话与状态机
-│
-├── src/
-│   ├── udp_client.cpp
-│   ├── udp_server.cpp
-│   ├── udp_endpoint.cpp
-│   └── session/
-│       └── gcs_session.cpp
-│
-├── apps/
-│   ├── gcs_server.cpp            # 示例：GCS 服务端
-│   └── gcs_client.cpp            # 示例：GCS 客户端
-│
-├── tests/
-│   ├── test_session.cpp          # Session 单元测试
-│   └── test_codec.cpp            # 编解码测试
-│
-├── CMakeLists.txt
-└── README.md   ←（本文件）
+```text
+NavState SHM
+  -> nav_viewd
+  -> /rovctrl_nav_view_v1
+  -> pwm_control_program
 ```
 
----
+`nav_viewd` 负责 stale 策略、视图裁剪和控制侧可消费的导航投影。
 
-## 4. 核心概念说明
+## 3. 目录结构
 
-### 4.1 UDP 通信模型
+- `apps/`
+  - 可执行程序入口
+- `include/gateway/`
+  - 桥接层接口、协议、SHM、会话、视图构建
+- `src/`
+  - 实现
+- `tests/`
+  - codec、session、nav view 相关测试
+- `docs/`
+  - 说明文档
 
-* 使用 **UDP**（低延迟、易穿透、适合遥控）
-* 不依赖 TCP 连接状态
-* 通过 **Session + 心跳 + TTL** 弥补 UDP 的不可靠性
+## 4. 当前主要二进制
 
-### 4.2 GCS Session（会话）
+常见目标都位于 `build/bin/`：
 
-`GcsSession` 是本模块的核心，负责：
+- `gcs_server`
+  - 接收 GCS UDP，发布 GCS intent SHM
+- `nav_viewd`
+  - 订阅 `NavState`，发布控制可消费的 `NavView`
+- `telemetry_dump`
+  - 订阅并打印 telemetry SHM
+- `intent_dump`
+  - 打印 intent SHM 内容
+- `nav_view_dump`
+  - 打印 nav view SHM 内容
+- `teleop_local`
+  - 本地键盘事件采集工具
+- `intentd`
+  - 本地/远程/自动意图仲裁实验入口
 
-* 识别对端（IP / Port）
-* 维护会话状态（未连接 / 已连接 / 超时）
-* 校验数据包合法性（版本、长度、CRC）
-* 提供：
+## 5. 当前推荐使用方式
 
-  * 最新控制指令（Control Intent）
-  * 会话心跳与超时检测
+对远程控制和联调，优先使用：
 
-⚠️ **注意**：
-Session 只关心“通信是否健康”，**不决定系统是否 armed / 是否输出 PWM**。
+- `gcs_server`
+- `nav_viewd`
+- `telemetry_dump`
 
----
+`teleop_local + intentd` 这条本地键盘路径当前更适合 bench 或实验用途，不建议把它当成首选操作链。
 
-## 5. 提供给上层的能力
+原因很简单：
 
-`comm_gcs` 向上层（如 `pwm_control_program`）提供：
+- 远程 GCS 链路是当前更常用、更充分验证的路径
+- 本地键盘链路涉及额外的 intent 合成和 SHM 命名约定，开发时更容易踩边界问题
 
-* ✅ **结构化、已校验的数据**
-* ✅ 明确的“是否新数据 / 是否过期”
-* ❌ 不直接提供线程调度
-* ❌ 不做任何控制逻辑判断
+## 6. 推荐阅读顺序
 
-典型用法（概念示意）：
+如果你想快速看懂 `gateway`，建议按下面顺序：
 
-```cpp
-if (session.has_valid_intent(now_ns)) {
-    intent = session.latest_intent();
-} else {
-    // 交由 ControlGuard 处理失联 / 超时
-}
-```
+1. `apps/gcs_server.cpp`
+2. `apps/nav_viewd.cpp`
+3. `include/gateway/session/gcs_session.hpp`
+4. `include/gateway/IPC/nav/`
+5. `include/gateway/IPC/intent/`
+6. `tests/test_session.cpp`
+7. `tests/test_nav_view_policy.cpp`
 
----
+## 7. 当前最重要的边界
 
-## 6. 可执行程序说明（apps）
+`gateway` 负责桥接，不负责：
 
-### 6.1 `gcs_server`
+- 模式门控最终判定
+- ARM / E-STOP 的最终安全策略
+- PWM 限斜率或驱动保护
+- 导航滤波本体
 
-用途：
+这些分别属于：
 
-* 在 **ROV / OrangePi** 上运行
-* 验证 UDP 接收、解包、Session 逻辑是否正确
-* 常用于 **脱离真实上位机的通信联调**
+- `pwm_control_program`
+- `orangepi_send`
+- `nav_core`
 
-运行示例：
+## 8. 开发时最值得记住的原则
 
-```bash
-./gcs_server
-```
+如果你准备改 `gateway`，先问自己：
 
-### 6.2 `gcs_client`
+- 我是在改“桥接语义”，还是在偷偷把控制逻辑塞进桥接层？
 
-用途：
+如果是后者，通常方向就错了。
 
-* 在 PC 或 OrangePi 上运行
-* 模拟 GCS 向 server 发送控制数据
-* 用于协议、CRC、Session 行为验证
-
----
-
-## 7. 单元测试（tests）
-
-* `test_session`
-
-  * 测试会话状态机、超时逻辑
-
-* `test_codec`
-
-  * 测试协议打包 / 解包 / CRC
-
-⚠️ 这些程序**不是现场运行程序**，仅用于开发与回归测试。
-
----
-
-## 8. 与 `pwm_control_program` 的关系
-
-在 `pwm_control_program` 中：
-
-* `comm_gcs` **不会被直接调用**
-* 而是通过：
-
-  * `io/gcs/gcs_link_udp`
-  * `io/input/gcs_input_provider`
-  * `io/input/gcs_input_adapter`
-    进行二次封装
-
-这样做的目的：
-
-* 允许未来替换通信方式（如串口 / CAN / ROS2）
-* 保持控制层代码稳定
-
----
-
-## 9. 设计原则总结
-
-* **单一职责**：只做通信
-* **强校验**：CRC / 长度 / 版本
-* **可测试**：独立 apps + tests
-* **可替换**：不侵入控制逻辑
-
----
-
-## 10. 新人须知（必读）
-
-* ❌ 不要在 `comm_gcs` 里写控制逻辑
-* ❌ 不要在这里判断 armed / estop
-* ✅ 所有“安全策略”应在 `control_guard`
-* ✅ 所有“运动决策”应在 controller 层
-
----
+`gateway` 应该保持“把数据运过去、格式理清楚、边界理明白”，而不是成为新的业务中心。

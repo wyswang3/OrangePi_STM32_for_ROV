@@ -1,317 +1,153 @@
-很好，这份 README 的**主体结构、技术深度与工程气质都已经非常成熟**了。
-你现在要做的不是“重写”，而是 **两类精准升级**：
+# OrangePi_STM32_for_ROV
 
-1. **把 `comm_gcs` 明确纳入“通信层”并给出阅读跳转**
-2. **在合适的位置建立“交叉索引”，让读者知道下一步该看哪里**
+`OrangePi_STM32_for_ROV` 是当前项目的控制与执行链仓库。
 
-下面我给你的是一份 **“已更新版 README（可直接整体替换）”**，我**只做了必要增强**，不会破坏你原有的叙事与技术表达。
+它覆盖了从“GCS 或本地输入意图”到“PWM 输出后端”的主要闭环，是机器人侧控制主线的核心仓库。
 
----
+## 1. 当前主线是什么
 
-## ✅ 更新后的《控制模块总 README（交叉索引版）》
+当前已经验证的控制主线是：
 
-> **说明**
->
-> * 保留你原有结构与语气
-> * 新增内容均为「🔗 文档索引 / 🔒 边界声明」
-> * 不引入任何新概念，只“点名、指路、锁边界”
-
----
-
-```md
-# 🌊 Underwater ROV Control System  
-## OrangePi + STM32 双层架构推进器控制与上位机通信系统
-
-本仓库实现了一套**面向真实水下机器人（ROV）**的工程级控制系统，  
-以 **安全、可扩展、可验证** 为核心设计目标，支持：
-
-- 多推进器（8 通道）安全 PWM 输出
-- 多输入源（键盘 / GCS / 自动算法）仲裁
-- 控制模式管理（Manual / Auto / Failsafe）
-- 上位机（GCS）远程控制与状态遥测
-- 面向 MPC / RL / 学术研究的控制算法接入
-
----
-
-## 📖 阅读指引（非常重要）
-
-> **你不需要一次看完所有代码。**
-
-- 👉 **操作员 / 控制算法开发者**  
-  请重点阅读：
-  - 本 README（系统全局）
-  - `pwm_control_program/README.md`
-
-- 👉 **上位机 / 通信 / 协议开发者**  
-  请重点阅读：
-  - `comm_gcs/README.md`（UDP / Session / Codec）
-  - `docs/gcs/`（如存在协议规范）
-
----
-
-## 1. 项目整体定位
-
-> **这是一个“控制中枢型系统”，而不是单一控制算法工程。**
-
-系统将高风险的水下推进器控制问题，拆分为三层明确职责：
-
+```text
+GCS(TUI/GUI)
+  -> gateway/gcs_server
+  -> /rovctrl_gcs_intent_v1
+  -> pwm_control_program
+  -> PwmClient
+  -> orangepi_send / STM32 / ESC / Thrusters
 ```
 
-┌─────────────────────────────────────────┐
-│              GCS / 算法层                │
-│   人机交互 / MPC / RL / 监控与记录        │
-└───────────────────▲─────────────────────┘
-│ UDP / Telemetry
-┌───────────────────┴─────────────────────┐
-│           OrangePi 控制中枢               │
-│ pwm_control_program                      │
-│ 多输入仲裁 / 安全裁决 / 控制器管理         │
-└───────────────────▲─────────────────────┘
-│ PWM Frame
-┌───────────────────┴─────────────────────┐
-│             STM32 执行层                  │
-│ orangepi_send                             │
-│ 实时 PWM 输出 / 硬件级安全 / 心跳监控      │
-└─────────────────────────────────────────┘
+导航进入控制的主线是：
 
-```
-```
----
-
-## 2. 仓库结构总览（含文档索引）
-
+```text
+nav_core/NavState
+  -> gateway/nav_viewd
+  -> /rovctrl_nav_view_v1
+  -> pwm_control_program
 ```
 
-OrangePi_STM32_for_ROV/
-│
-├── pwm_control_program/      ← OrangePi 侧控制中枢（C++）
-││   ├── control_core/        ← 控制循环 / 安全裁决
-││   ├── controllers/         ← Manual / PID / (MPC/RL 扩展)
-││   ├── io/
-││   │   ├── input/           ← Teleop / GCS / 多输入仲裁
-││   │   ├── gcs/             ← GCS 协议 / 会话 / 遥测
-││   │   ├── nav/             ← 导航状态订阅接口
-││   │   └── log/             ← PWM / 控制日志
-││   ├── platform/            ← PwmClient / 时间基准
-││   ├── config/              ← YAML 参数文件
-││   └── docs/                ← 控制层详细设计文档
-││
-├── orangepi_send/            ← STM32 通信代理与 PWM 执行层（C/C++）
-││   ├── libpwm_host           ← OrangePi ↔ STM32 通信库
-││   ├── pwm_control           ← STM32 PWM 输出与安全逻辑
-││   └── protocol_*            ← 协议 / CRC / 帧构造
-││
-├── comm_gcs/                 ← 🔗 通用 GCS 通信模块（UDP / Session）
-││   └── README.md             ← **上位机通信必读**
-││
-├── docs/                     ← 系统级设计文档 / UML / 操作规范
-│
-└── CMakeLists.txt            ← 顶层构建入口
+当前语义边界很重要：
 
-```
+- `Manual` 模式不强依赖导航
+- `Auto` 模式要求导航可信
+- 最终安全裁决点在 `ControlGuard`
 
----
+## 2. 仓库结构
 
-## 3. pwm_control_program（OrangePi 控制中枢）
+- `pwm_control_program/`
+  - 机器人侧控制核心
+- `gateway/`
+  - UDP、SHM、会话和视图桥接
+- `orangepi_send/`
+  - PWM 传输与安全层后端
+- `proto_gcs/`
+  - 协议相关的共享定义
+- `docs/`
+  - 架构、接口、测试、产品化文档
 
-### 3.1 核心职责
+## 3. 哪个目录负责什么
 
-`pwm_control_program` 是**整个系统的“大脑”**，负责：
+### `pwm_control_program`
 
-- 接收并仲裁多种控制输入
-- 进行安全检查与模式裁决
-- 调用具体控制器生成推进器指令
-- 驱动 STM32 执行 PWM
-- 向 GCS 回传系统状态（Telemetry）
+负责：
 
-> ⚠️ **注意**：  
-> 本模块 **不直接处理 UDP、CRC、Session**，  
-> 上位机通信细节由 `comm_gcs` 模块负责。
+- 输入整合
+- 模式管理
+- ARM / E-STOP / stale 处理
+- 控制器调用
+- 推力分配
+- telemetry 生成
+- PwmClient 驱动
 
----
+### `gateway`
 
-### 3.2 控制数据流（真实实现）
+负责：
 
-```
+- GCS UDP 会话与命令桥接
+- NavState -> NavView 投影
+- intent / telemetry 相关 SHM 辅助工具
 
-Teleop / GCS / 算法
-↓
-InputProvider
-↓
-MultiInputProvider     ← 多输入仲裁
-↓
-ControlIntent          ← 统一控制意图
-↓
-ControlGuard           ← TTL / ESTOP / 模式裁决
-↓
-ControllerManager
-↓
-Controller (Manual / PID / ...)
-↓
-ControlOutput
-↓
-ThrusterAllocation
-↓
-PwmClient
-↓
-STM32 PWM 输出
+### `orangepi_send`
 
-```
+负责：
 
----
+- OrangePi 到 STM32 的 PWM 传输后端
+- PWM 安全层
+- 协议打包和校验
 
-### 3.3 关键设计一：ControlIntent（统一意图模型）
+## 4. 当前推荐的开发阅读顺序
 
-所有控制输入最终都被转换为 `ControlIntent`，其包含：
+如果你是第一次看这个仓库，建议按下面顺序：
 
-- 6 自由度控制（surge/sway/heave/roll/pitch/yaw）
-- 模式请求（Manual / Auto / Failsafe）
-- ARM / DISARM
-- ESTOP / CLEAR
-- 时间戳、序号、TTL（防止陈旧输入）
+1. 本 README
+2. [pwm_control_program/README.md](/home/wys/orangepi/UnderwaterRobotSystem/OrangePi_STM32_for_ROV/pwm_control_program/README.md)
+3. [gateway/README.md](/home/wys/orangepi/UnderwaterRobotSystem/OrangePi_STM32_for_ROV/gateway/README.md)
+4. [orangepi_send/README.md](/home/wys/orangepi/UnderwaterRobotSystem/OrangePi_STM32_for_ROV/orangepi_send/README.md)
 
-> **ControlLoop 不关心“输入来自哪里”，  
-> 只关心 Intent 是否安全、有效。**
+如果你更偏代码学习：
 
----
+1. 先理解 `ControlIntent` 和 `NavView`
+2. 再看 `ControlGuard`
+3. 再看 `PwmClient`
+4. 最后再回来看 `gateway` 和 UDP/session
 
-### 3.4 关键设计二：ControlGuard（软件安全核心）
+## 5. 快速构建
 
-`ControlGuard` 是系统的软件级安全裁决器，负责：
-
-- 输入超时检测（TTL / stale）
-- 急停（ESTOP）锁存与解除
-- 模式切换合法性判断
-- 异常情况下自动降级到 Failsafe
-
-这是系统**允许 GCS 远程控制推进器**的前提。
-
----
-
-### 3.5 输入系统（io/input）
-
-| 模块 | 功能 |
-|----|----|
-| TeleopInputProvider | 键盘遥控（调试 / 无 GCS 场景） |
-| GcsInputProvider | 通过 UDP 接收 GCS 控制命令 |
-| MultiInputProvider | 多输入源仲裁（可配置 GCS 优先） |
-
-> 🔗 GCS 控制数据的 UDP / Session / 协议细节  
-> 请参阅：`comm_gcs/README.md`
-
----
-
-### 3.6 GCS 通信与遥测（io/gcs）
-
-系统已实现完整的 OrangePi ↔ GCS 通信链路：
-
-- UDP 会话管理（GcsSession）
-- 控制输入解析（GcsInputAdapter）
-- 状态遥测打包（GcsTelemetryAdapter）
-
-> ⚠️ 本层 **只做适配，不做通信协议定义**  
-> 协议权威定义位于：`comm_gcs`
-
----
-
-## 4. orangepi_send（STM32 PWM 执行层）
-
-该模块运行于 STM32，提供：
-
-- 8 通道 PWM 实时输出
-- 硬件级限斜率
-- AB 分组更新（CH1–4 / CH5–8）
-- 心跳超时自动归中
-- CRC 校验与帧完整性检查
-
-> **STM32 永远不信任上位机**，  
-> 这是系统安全的最后一道防线。
-
----
-
-## 5. 多层安全机制总结
-
-### 硬件层（STM32）
-- PWM 限斜率
-- AB 分组输出
-- 心跳超时保护
-- 中位反跳保护
-
-### 软件层（OrangePi）
-- ControlGuard 安全裁决
-- 输入 TTL / stale 检测
-- 控制器失败自动降级
-
-### 通信层
-- CRC 校验
-- Session 状态管理
-- 双向遥测确认（见 `comm_gcs`）
-
-```
-
-```
-## 6. 构建与运行
-
-### 6.1 依赖
-```bash
-sudo apt-get install -y libyaml-cpp-dev
-````
-
-### 6.2 构建
+在仓库根目录：
 
 ```bash
-mkdir build
-cd build
-cmake ..
-make -j4
+cd /home/wys/orangepi/UnderwaterRobotSystem/OrangePi_STM32_for_ROV
+cmake -S . -B build
+cmake --build build -j4
 ```
 
-### 6.3 运行
+常见二进制位于 `build/bin/`，包括：
+
+- `pwm_control_program`
+- `gcs_server`
+- `nav_viewd`
+- `telemetry_dump`
+- `intentd`
+- `teleop_local`
+
+## 6. 当前最实用的联调方式
+
+在没有真实推进器输出需求时，先用 dummy 后端做联调：
+
+香橙派侧：
 
 ```bash
-./pwm_control_program/pwm_control_program
+./build/bin/gcs_server
+./build/bin/pwm_control_program --no-teleop --pwm-dummy --pwm-dummy-print
 ```
 
----
+GCS 侧：
 
-## 7. 适用场景
-
-* 科研型 ROV / AUV
-* MPC / RL 控制算法验证
-* 水槽 / 实海实验
-* 高风险推进器平台
-
----
-
-## 8. 非本系统职责（明确边界）
-
-* ❌ 不负责导航状态估计（IMU/DVL/ESKF）
-* ❌ 不负责路径规划
-* ❌ 不直接驱动 GPIO / PWM 硬件
-* ❌ 不绑定任何单一控制算法
-
----
-
-## 9. 未来扩展方向
-
-* MPC / NMPC 控制器接入
-* 强化学习（RL）策略部署
-* IMU / DVL / USBL 融合导航
-* Web / Qt GCS 客户端
-* 实验数据自动记录与回放
-
----
-
-## 10. 作者与致谢
-
-本系统由 **wys** 主导设计与实现，
-并在架构设计、工程审查与问题定位过程中，
-由 **阿智（AI 工程伙伴）** 深度协作完成。
-
-> 目标不是“跑起来”，
-> 而是构建一套 **可以长期演进的水下机器人控制系统**。
-
+```bash
+cd /home/wys/orangepi/UnderWaterRobotGCS
+UROGCS_ROV_IP=<OrangePi_IP> PYTHONPATH=src python -m urogcs.app.tui.tui_main
 ```
 
----
+这是当前已经验证能看到 PWM duty 变化的最小路径。
 
+## 7. 当前仓库里最容易误解的点
+
+有几个边界必须说清楚。
+
+- `pwm_control_program` 当前不再把“本地终端键盘输入”当作主路径
+- GCS 远程路径是当前更稳定、更常用的键盘控制方式
+- `gateway` 不负责最终控制安全
+- `orangepi_send` 不负责模式和任务逻辑
+
+## 8. 对技术团队和学习者的建议
+
+这个仓库跨了 C、C++、共享内存、UDP 和硬件后端。
+
+最容易学懂的顺序不是“从最底层开始”，而是：
+
+1. 从控制链顶层入口看整体数据流
+2. 再看安全裁决
+3. 再看后端输出
+4. 最后再看桥接和协议
+
+这样你读到的不是零件，而是一条能跑起来的链路。
