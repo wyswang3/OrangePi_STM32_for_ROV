@@ -169,6 +169,36 @@ class NavState:
 
 
 @dataclass(slots=True)
+class HealthMonitorStatus:
+    stamp_ns: int = 0
+    telemetry_seq: int = 0
+    severity: int = 0
+    session_state: int = 0
+    health_state: int = 0
+    fault_state: int = 0
+    last_fault_code: int = 0
+    command_status: int = 0
+    command_fault_code: int = 0
+    nav_fault_code: int = 0
+    nav_status_flags: int = 0
+    nav_age_ms: int = 0
+    heartbeat_age_ms: int = 0
+    nav_valid: int = 0
+    nav_stale: int = 0
+    nav_degraded: int = 0
+    estop_latched: int = 0
+    failsafe_active: int = 0
+    imu_online: int = 0
+    dvl_online: int = 0
+    imu_reconnecting: int = 0
+    dvl_reconnecting: int = 0
+    imu_mismatch: int = 0
+    dvl_mismatch: int = 0
+    summary: str = ""
+    recommended_action: str = ""
+
+
+@dataclass(slots=True)
 class HealthSummary:
     stamp_ns: int = 0
     telemetry_seq: int = 0
