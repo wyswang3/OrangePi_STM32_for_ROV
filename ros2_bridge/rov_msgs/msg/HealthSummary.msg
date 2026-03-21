@@ -1,0 +1,14 @@
+uint64 stamp_ns
+uint64 telemetry_seq
+uint8 session_state
+uint8 health_state
+uint8 fault_state
+uint16 last_fault_code
+uint8 nav_state
+uint8 nav_valid
+uint8 nav_stale
+uint8 nav_degraded
+uint16 nav_fault_code
+uint16 nav_status_flags
+uint32 nav_age_ms
+uint32 heartbeat_age_ms

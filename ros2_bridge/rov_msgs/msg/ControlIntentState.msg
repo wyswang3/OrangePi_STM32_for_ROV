@@ -1,0 +1,12 @@
+uint64 intent_id
+uint64 session_id
+uint64 cmd_seq
+uint64 stamp_ns
+uint32 ttl_ms
+uint8 source
+uint8 requested_mode
+uint8 arm_cmd
+uint8 estop_cmd
+uint8 valid
+float32[6] dof_cmd
+rov_msgs/MotorTestState motor_test

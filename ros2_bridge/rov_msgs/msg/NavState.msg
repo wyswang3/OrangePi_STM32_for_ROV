@@ -1,0 +1,16 @@
+uint64 t_ns
+float64[3] pos
+float64[3] vel
+float64[3] rpy
+float64 depth
+float64[3] omega_b
+float64[3] acc_b
+uint32 age_ms
+uint8 valid
+uint8 stale
+uint8 degraded
+uint8 nav_state
+uint8 health
+uint16 fault_code
+uint16 sensor_mask
+uint16 status_flags

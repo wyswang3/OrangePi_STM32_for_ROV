@@ -1,0 +1,16 @@
+uint8 active_mode
+uint8 armed
+uint8 estop_latched
+uint8 failsafe_active
+uint8 control_source
+uint8 intent_fresh
+uint8 controller_status
+uint8 motor_test_active
+uint64 active_intent_id
+string controller_name
+string desired_controller
+float32[6] dof_cmd_applied
+float32[8] thruster_cmd
+float32[8] pwm_duty
+uint32 consecutive_failures
+uint32 auto_fail_limit
