@@ -1,6 +1,8 @@
 #include <cstdint>
 #include <iostream>
 #include <memory>
+#include <string>
+#include <vector>
 #include <cmath>
 
 #include "controllers/controller_manager.hpp"
@@ -333,6 +335,79 @@ int test_guard_allows_degraded_auto_nav()
     return 0;
 }
 
+int test_guard_emits_structured_events()
+{
+    cc::ControlGuard guard(cc::ControlGuardConfig{});
+    cc::ControlState state{};
+    std::vector<std::string> events;
+
+    guard.set_event_callback([&](const cc::GuardEvent& event) {
+        events.emplace_back(event.event != nullptr ? event.event : "");
+    });
+
+    cc::ControlIntent arm{};
+    arm.cmd_seq = 1;
+    arm.stamp_ns = 1;
+    arm.ttl_ms = 100;
+    arm.valid = true;
+    arm.has_arm_cmd = true;
+    arm.arm = true;
+    TEST_CHECK(guard.step(1, state, nullptr, arm).armed);
+
+    shared::msg::NavStateView bad_nav{};
+    bad_nav.valid = 0;
+    bad_nav.stale = 1;
+    bad_nav.degraded = 0;
+    bad_nav.nav_state = shared::msg::NavRunState::kInvalid;
+    bad_nav.health = shared::msg::NavHealth::INVALID;
+    bad_nav.fault_code = shared::msg::NavFaultCode::kNavViewStale;
+
+    cc::ControlIntent auto_req{};
+    auto_req.cmd_seq = 2;
+    auto_req.stamp_ns = 2;
+    auto_req.ttl_ms = 100;
+    auto_req.valid = true;
+    auto_req.has_mode_request = true;
+    auto_req.mode_request = cc::ControlMode::kAuto;
+
+    const auto rejected = guard.step(2, state, &bad_nav, auto_req);
+    TEST_EQ(static_cast<int>(rejected.effective_mode),
+            static_cast<int>(cc::ControlMode::kFailsafe));
+
+    auto has_event = [&](const char* name) {
+        for (const auto& event_name : events) {
+            if (event_name == name) {
+                return true;
+            }
+        }
+        return false;
+    };
+
+    TEST_CHECK(has_event("guard_reject"));
+    TEST_CHECK(has_event("guard_nav_gating_changed"));
+    TEST_CHECK(has_event("guard_failsafe_entered"));
+
+    events.clear();
+    auto good_nav = make_auto_ready_nav();
+
+    cc::ControlIntent manual_req{};
+    manual_req.cmd_seq = 3;
+    manual_req.stamp_ns = 3;
+    manual_req.ttl_ms = 100;
+    manual_req.valid = true;
+    manual_req.has_mode_request = true;
+    manual_req.mode_request = cc::ControlMode::kManual;
+
+    const auto recovered = guard.step(3, state, &good_nav, manual_req);
+    TEST_EQ(static_cast<int>(recovered.effective_mode),
+            static_cast<int>(cc::ControlMode::kManual));
+    TEST_EQ(static_cast<int>(recovered.failsafe),
+            static_cast<int>(cc::FailsafeAction::kNone));
+    TEST_CHECK(has_event("guard_nav_gating_changed"));
+    TEST_CHECK(has_event("guard_failsafe_cleared"));
+    return 0;
+}
+
 int test_wire_codec_maps_failsafe()
 {
     shared::msg::ControlIntent wire{};
@@ -518,6 +593,8 @@ int main()
     rc = test_guard_rejects_stale_auto_nav();
     if (rc != 0) return rc;
     rc = test_guard_allows_degraded_auto_nav();
+    if (rc != 0) return rc;
+    rc = test_guard_emits_structured_events();
     if (rc != 0) return rc;
     rc = test_wire_codec_maps_failsafe();
     if (rc != 0) return rc;

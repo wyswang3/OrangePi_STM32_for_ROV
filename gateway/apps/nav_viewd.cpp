@@ -19,10 +19,16 @@
 #include <csignal>
 #include <cstdint>
 #include <cstdlib>
+#include <ctime>
+#include <filesystem>
+#include <fstream>
+#include <iomanip>
 #include <iostream>
+#include <sstream>
 #include <string>
 #include <thread>
 #include <algorithm>
+#include <unistd.h>
 
 #include "gateway/IPC/nav/nav_state_subscriber_shm.hpp"
 #include "gateway/IPC/nav/nav_view_builder.hpp"
@@ -47,6 +53,195 @@ inline std::uint64_t now_mono_ns()
             .count());
 }
 
+std::string csv_escape(const std::string& value)
+{
+    std::string out;
+    out.reserve(value.size() + 2);
+    out.push_back('"');
+    for (const char ch : value) {
+        if (ch == '"') {
+            out.push_back('"');
+        }
+        out.push_back(ch);
+    }
+    out.push_back('"');
+    return out;
+}
+
+std::string wall_time_now_string()
+{
+    std::time_t t = std::time(nullptr);
+    std::tm tm{};
+#if defined(_WIN32)
+    localtime_s(&tm, &t);
+#else
+    localtime_r(&t, &tm);
+#endif
+    std::ostringstream oss;
+    oss << std::put_time(&tm, "%Y-%m-%d %H:%M:%S");
+    return oss.str();
+}
+
+std::string resolve_run_id(const char* process_name)
+{
+    if (const char* env = std::getenv("ROV_RUN_ID"); env != nullptr && env[0] != '\0') {
+        return env;
+    }
+
+    std::time_t t = std::time(nullptr);
+    std::tm tm{};
+#if defined(_WIN32)
+    localtime_s(&tm, &t);
+#else
+    localtime_r(&t, &tm);
+#endif
+    std::ostringstream oss;
+    oss << process_name << "-" << ::getpid() << "-" << std::put_time(&tm, "%Y%m%d_%H%M%S");
+    return oss.str();
+}
+
+struct NavViewEventCsvLogger {
+    bool init(const std::string& path)
+    {
+        if (path.empty()) {
+            return false;
+        }
+
+        std::error_code ec;
+        const std::filesystem::path log_path(path);
+        const auto dir = log_path.parent_path();
+        if (!dir.empty() && !std::filesystem::exists(dir, ec) &&
+            !std::filesystem::create_directories(dir, ec)) {
+            return false;
+        }
+
+        const bool need_header = !std::filesystem::exists(log_path, ec) ||
+                                 std::filesystem::file_size(log_path, ec) == 0;
+        ofs_.open(log_path, std::ios::out | std::ios::app);
+        if (!ofs_.is_open()) {
+            return false;
+        }
+
+        run_id_ = resolve_run_id("nav_viewd");
+        if (need_header) {
+            ofs_
+                << "mono_ns,wall_time,component,event,level,run_id,process_name,pid"
+                << ",fault_code,nav_valid,nav_stale,nav_degraded,message,age_ms_from_nav_pub"
+                << ",publish,diagnostic_only,degraded_publish,no_nav_yet,stale_triggered"
+                << ",source_valid,source_stale,source_degraded,source_fault_code\n";
+            ofs_.flush();
+        }
+        return true;
+    }
+
+    void log_event(std::uint64_t mono_ns,
+                   const char*   event,
+                   const char*   level,
+                   std::uint16_t fault_code,
+                   std::uint8_t  nav_valid,
+                   std::uint8_t  nav_stale,
+                   std::uint8_t  nav_degraded,
+                   std::uint64_t age_ms_from_nav_pub,
+                   bool          publish,
+                   bool          diagnostic_only,
+                   bool          degraded_publish,
+                   bool          no_nav_yet,
+                   bool          stale_triggered,
+                   std::uint8_t  source_valid,
+                   std::uint8_t  source_stale,
+                   std::uint8_t  source_degraded,
+                   std::uint16_t source_fault_code,
+                   const std::string& message)
+    {
+        if (!ofs_.is_open()) {
+            return;
+        }
+
+        ofs_
+            << mono_ns
+            << "," << csv_escape(wall_time_now_string())
+            << "," << csv_escape("nav_viewd")
+            << "," << csv_escape(event != nullptr ? event : "")
+            << "," << csv_escape(level != nullptr ? level : "")
+            << "," << csv_escape(run_id_)
+            << "," << csv_escape("nav_viewd")
+            << "," << ::getpid()
+            << "," << fault_code
+            << "," << static_cast<unsigned>(nav_valid)
+            << "," << static_cast<unsigned>(nav_stale)
+            << "," << static_cast<unsigned>(nav_degraded)
+            << "," << csv_escape(message)
+            << "," << age_ms_from_nav_pub
+            << "," << (publish ? 1 : 0)
+            << "," << (diagnostic_only ? 1 : 0)
+            << "," << (degraded_publish ? 1 : 0)
+            << "," << (no_nav_yet ? 1 : 0)
+            << "," << (stale_triggered ? 1 : 0)
+            << "," << static_cast<unsigned>(source_valid)
+            << "," << static_cast<unsigned>(source_stale)
+            << "," << static_cast<unsigned>(source_degraded)
+            << "," << source_fault_code
+            << "\n";
+        ofs_.flush();
+    }
+
+private:
+    std::ofstream ofs_;
+    std::string run_id_;
+};
+
+struct DecisionSnapshot {
+    bool publish = false;
+    bool diagnostic_only = false;
+    bool degraded_publish = false;
+    bool no_nav_yet = false;
+    bool stale_triggered = false;
+    std::uint8_t nav_valid = 0;
+    std::uint8_t nav_stale = 0;
+    std::uint8_t nav_degraded = 0;
+    std::uint16_t fault_code = 0;
+    std::uint8_t source_valid = 0;
+    std::uint8_t source_stale = 0;
+    std::uint8_t source_degraded = 0;
+    std::uint16_t source_fault_code = 0;
+    std::uint64_t age_ms_from_nav_pub = 0;
+
+    bool operator==(const DecisionSnapshot& rhs) const noexcept
+    {
+        return publish == rhs.publish &&
+               diagnostic_only == rhs.diagnostic_only &&
+               degraded_publish == rhs.degraded_publish &&
+               no_nav_yet == rhs.no_nav_yet &&
+               stale_triggered == rhs.stale_triggered &&
+               nav_valid == rhs.nav_valid &&
+               nav_stale == rhs.nav_stale &&
+               nav_degraded == rhs.nav_degraded &&
+               fault_code == rhs.fault_code &&
+               source_valid == rhs.source_valid &&
+               source_stale == rhs.source_stale &&
+               source_degraded == rhs.source_degraded &&
+               source_fault_code == rhs.source_fault_code &&
+               age_ms_from_nav_pub == rhs.age_ms_from_nav_pub;
+    }
+};
+
+std::string decision_reason(const DecisionSnapshot& snap)
+{
+    if (snap.no_nav_yet) {
+        return "no_nav_yet";
+    }
+    if (snap.stale_triggered && !snap.publish) {
+        return "stale_diagnostic_publish_suppressed";
+    }
+    if (snap.stale_triggered && snap.diagnostic_only) {
+        return "stale_diagnostic_only_publish";
+    }
+    if (snap.nav_valid != 0 && snap.nav_stale == 0) {
+        return "pass_through_valid";
+    }
+    return "pass_through_invalid";
+}
+
 struct Args {
     // SHM names
     std::string nav_state_shm = "/rov_nav_state_v1";
@@ -67,6 +262,7 @@ struct Args {
 
     // Logging
     double print_hz = 2.0;
+    std::string event_log_path = "./logs/nav/nav_events.csv";
 };
 
 static void usage(const char* prog)
@@ -83,7 +279,8 @@ static void usage(const char* prog)
         << "  --publish-when-stale 0|1   default: 1\n"
         << "  --hold-last-good     0|1   default: 0 (deprecated)\n"
         << "  --degrade-pub-hz <hz>      default: 5 (0 disables degrade throttle)\n"
-        << "  --print-hz <hz>            default: 2\n";
+        << "  --print-hz <hz>            default: 2\n"
+        << "  --event-log <path>         default: ./logs/nav/nav_events.csv\n";
 }
 
 static bool parse_bool(const std::string& s, bool& out)
@@ -141,6 +338,9 @@ static bool parse_args(int argc, char** argv, Args& a)
         } else if (k == "--print-hz") {
             const char* v = need("--print-hz"); if (!v) return false;
             a.print_hz = std::atof(v);
+        } else if (k == "--event-log") {
+            const char* v = need("--event-log"); if (!v) return false;
+            a.event_log_path = v;
         } else {
             std::cerr << "[ERR] unknown arg: " << k << "\n";
             usage(argv[0]);
@@ -212,10 +412,16 @@ int main(int argc, char** argv)
         << " warmup_ms=" << args.warmup_ms << "\n"
         << "  publish_when_stale=" << (args.publish_when_stale ? 1 : 0)
         << " hold_last_good=" << (args.hold_last_good ? 1 : 0)
-        << " print_hz=" << args.print_hz << "\n";
+        << " print_hz=" << args.print_hz << "\n"
+        << "  event_log=" << args.event_log_path << "\n";
     if (args.hold_last_good) {
         std::cerr << "[nav_viewd][WARN] --hold-last-good is deprecated; "
                      "control-facing stale frames will still clear kinematics.\n";
+    }
+
+    NavViewEventCsvLogger event_logger;
+    if (!event_logger.init(args.event_log_path)) {
+        std::cerr << "[nav_viewd][WARN] event logger init failed, continue without nav events CSV\n";
     }
 
     // -------------------------------------------------------------------------
@@ -272,8 +478,10 @@ int main(int argc, char** argv)
     shared::msg::NavStateView last_view{};
     bool has_last_view = false;
 
-    // from subscriber header (publisher timestamps in nav shm)
     std::uint64_t last_nav_pub_mono_ns = 0;
+    bool last_source_healthy = false;
+    bool have_last_decision = false;
+    DecisionSnapshot last_decision{};
 
     // stats
     std::uint64_t cnt_poll = 0, cnt_poll_hit = 0, cnt_no_nav = 0;
@@ -335,15 +543,103 @@ int main(int argc, char** argv)
                 advance_next(next_degrade, now_tp, degrade_period);
             }
 
+            const std::uint64_t age_ms_from_nav_pub = (last_nav_pub_mono_ns == 0 || now_ns < last_nav_pub_mono_ns)
+                ? UINT64_MAX
+                : (now_ns - last_nav_pub_mono_ns) / 1000000ull;
+            const DecisionSnapshot snap{
+                decision.publish,
+                decision.diagnostic_only,
+                decision.degraded_publish,
+                decision.no_nav_yet,
+                decision.stale_triggered,
+                decision.out.valid,
+                decision.out.stale,
+                decision.out.degraded,
+                static_cast<std::uint16_t>(decision.out.fault_code),
+                static_cast<std::uint8_t>(has_last_view ? last_view.valid : 0),
+                static_cast<std::uint8_t>(has_last_view ? last_view.stale : 0),
+                static_cast<std::uint8_t>(has_last_view ? last_view.degraded : 0),
+                static_cast<std::uint16_t>(has_last_view ? last_view.fault_code : shared::msg::NavFaultCode::kNoData),
+                age_ms_from_nav_pub,
+            };
+
+            // 这里只在决策组合变化时写事件，避免每个 publish slot 都重复刷同一条 stale/no-data 文本。
+            if (!have_last_decision || !(snap == last_decision)) {
+                const bool degraded_path = snap.diagnostic_only || snap.no_nav_yet || snap.stale_triggered;
+                event_logger.log_event(
+                    now_ns,
+                    "nav_view_decision_changed",
+                    degraded_path ? "warn" : "info",
+                    snap.fault_code,
+                    snap.nav_valid,
+                    snap.nav_stale,
+                    snap.nav_degraded,
+                    snap.age_ms_from_nav_pub,
+                    snap.publish,
+                    snap.diagnostic_only,
+                    snap.degraded_publish,
+                    snap.no_nav_yet,
+                    snap.stale_triggered,
+                    snap.source_valid,
+                    snap.source_stale,
+                    snap.source_degraded,
+                    snap.source_fault_code,
+                    decision_reason(snap));
+                last_decision = snap;
+                have_last_decision = true;
+            }
+
+            const bool source_healthy = snap.publish && !snap.diagnostic_only && snap.nav_valid != 0 && snap.nav_stale == 0;
+            if (!last_source_healthy && source_healthy) {
+                event_logger.log_event(
+                    now_ns,
+                    "nav_view_source_recovered",
+                    "info",
+                    snap.fault_code,
+                    snap.nav_valid,
+                    snap.nav_stale,
+                    snap.nav_degraded,
+                    snap.age_ms_from_nav_pub,
+                    snap.publish,
+                    snap.diagnostic_only,
+                    snap.degraded_publish,
+                    snap.no_nav_yet,
+                    snap.stale_triggered,
+                    snap.source_valid,
+                    snap.source_stale,
+                    snap.source_degraded,
+                    snap.source_fault_code,
+                    "nav view returned to normal pass-through");
+            }
+            last_source_healthy = source_healthy;
+
             if (decision.publish) {
                 if (nav_pub.publish(decision.out)) {
                     ++cnt_pub;
                     if (decision.degraded_publish) ++cnt_pub_degrade;
                 } else {
                     std::cerr << "[nav_viewd][WARN] publish failed\n";
+                    event_logger.log_event(
+                        now_ns,
+                        "nav_view_publish_failed",
+                        "error",
+                        static_cast<std::uint16_t>(decision.out.fault_code),
+                        decision.out.valid,
+                        decision.out.stale,
+                        decision.out.degraded,
+                        age_ms_from_nav_pub,
+                        decision.publish,
+                        decision.diagnostic_only,
+                        decision.degraded_publish,
+                        decision.no_nav_yet,
+                        decision.stale_triggered,
+                        has_last_view ? last_view.valid : 0,
+                        has_last_view ? last_view.stale : 0,
+                        has_last_view ? last_view.degraded : 0,
+                        static_cast<std::uint16_t>(has_last_view ? last_view.fault_code : shared::msg::NavFaultCode::kNoData),
+                        "NavViewPublisherShm.publish returned false");
                 }
             }
-
         }
 
         // ---------------- Diagnostics ----------------

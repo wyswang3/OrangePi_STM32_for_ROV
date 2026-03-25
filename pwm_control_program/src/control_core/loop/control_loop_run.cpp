@@ -14,11 +14,18 @@
 #include <array>
 #include <chrono>
 #include <cstdint>
+#include <cstdlib>
+#include <ctime>
+#include <filesystem>
+#include <fstream>
 #include <iostream>
+#include <sstream>
+#include <string_view>
 #include <thread>
 #include <cmath>
 #include <iomanip>
 #include <algorithm>
+#include <unistd.h>
 
 #include "control_core/telemetry_frame_builder.hpp"
 #include "io/log/control_loop_logger.hpp"
@@ -68,6 +75,146 @@ void log_thruster_activity(const std::array<float, N>& thr_cmd)
     // }
     // std::cout << "\n";
 }
+
+
+std::string csv_escape(std::string_view value)
+{
+    std::string out;
+    out.reserve(value.size() + 2);
+    out.push_back('"');
+    for (const char ch : value) {
+        if (ch == '"') {
+            out.push_back('"');
+        }
+        out.push_back(ch);
+    }
+    out.push_back('"');
+    return out;
+}
+
+std::string wall_time_now_string()
+{
+    std::time_t t = std::time(nullptr);
+    std::tm tm{};
+#if defined(_WIN32)
+    localtime_s(&tm, &t);
+#else
+    localtime_r(&t, &tm);
+#endif
+    std::ostringstream oss;
+    oss << std::put_time(&tm, "%Y-%m-%d %H:%M:%S");
+    return oss.str();
+}
+
+std::string resolve_run_id(const char* process_name)
+{
+    if (const char* env = std::getenv("ROV_RUN_ID"); env != nullptr && env[0] != '\0') {
+        return env;
+    }
+
+    std::time_t t = std::time(nullptr);
+    std::tm tm{};
+#if defined(_WIN32)
+    localtime_s(&tm, &t);
+#else
+    localtime_r(&t, &tm);
+#endif
+    std::ostringstream oss;
+    oss << process_name << "-" << ::getpid() << "-" << std::put_time(&tm, "%Y%m%d_%H%M%S");
+    return oss.str();
+}
+
+const char* guard_failsafe_name(rovctrl::control_core::FailsafeAction action) noexcept
+{
+    switch (action) {
+    case rovctrl::control_core::FailsafeAction::kNone:
+        return "none";
+    case rovctrl::control_core::FailsafeAction::kHoldOutput:
+        return "hold_output";
+    case rovctrl::control_core::FailsafeAction::kZeroOutput:
+        return "zero_output";
+    case rovctrl::control_core::FailsafeAction::kEmergencyStop:
+        return "emergency_stop";
+    default:
+        return "unknown";
+    }
+}
+
+struct ControlEventCsvLogger {
+    bool init(const std::filesystem::path& path)
+    {
+        std::error_code ec;
+        const auto dir = path.parent_path();
+        if (!dir.empty() && !std::filesystem::exists(dir, ec) &&
+            !std::filesystem::create_directories(dir, ec)) {
+            return false;
+        }
+
+        const bool need_header = !std::filesystem::exists(path, ec) ||
+                                 std::filesystem::file_size(path, ec) == 0;
+        ofs_.open(path, std::ios::out | std::ios::app);
+        if (!ofs_.is_open()) {
+            return false;
+        }
+
+        run_id_ = resolve_run_id("pwm_control_program");
+        if (need_header) {
+            ofs_
+                << "mono_ns,wall_time,component,event,level,run_id,process_name,pid"
+                << ",fault_code,mode,requested_mode,controller,nav_present,nav_valid"
+                << ",nav_stale,nav_degraded,armed,estop_latched,failsafe_action,message\n";
+            ofs_.flush();
+        }
+        return true;
+    }
+
+    void log_guard_event(const rovctrl::control_core::GuardEvent& event,
+                         std::string_view                         controller)
+    {
+        if (!ofs_.is_open()) {
+            return;
+        }
+
+        // Guard 内部只发低频边沿事件，这里同步 append 一行 CSV。
+        // 这样可以先把 reject / failsafe 结构化落地，而不把文件 I/O 塞回安全决策对象内部。
+        ofs_
+            << event.mono_ns
+            << "," << csv_escape(wall_time_now_string())
+            << "," << csv_escape(event.component != nullptr ? event.component : "")
+            << "," << csv_escape(event.event != nullptr ? event.event : "")
+            << "," << csv_escape(event.level != nullptr ? event.level : "")
+            << "," << csv_escape(run_id_)
+            << "," << csv_escape("pwm_control_program")
+            << "," << ::getpid()
+            << "," << event.fault_code
+            << "," << csv_escape(std::string(rovctrl::control_core::to_string(event.mode)))
+            << "," << csv_escape(std::string(rovctrl::control_core::to_string(event.requested_mode)))
+            << "," << csv_escape(controller)
+            << "," << (event.nav_present ? 1 : 0)
+            << "," << (event.nav_valid ? 1 : 0)
+            << "," << (event.nav_stale ? 1 : 0)
+            << "," << (event.nav_degraded ? 1 : 0)
+            << "," << (event.armed ? 1 : 0)
+            << "," << (event.estop_latched ? 1 : 0)
+            << "," << csv_escape(guard_failsafe_name(event.failsafe))
+            << "," << csv_escape(event.message != nullptr ? event.message : "")
+            << "\n";
+        ofs_.flush();
+    }
+
+private:
+    std::ofstream ofs_;
+    std::string run_id_;
+};
+
+struct GuardCallbackReset final {
+    rovctrl::control_core::ControlGuard& guard;
+
+    ~GuardCallbackReset()
+    {
+        guard.set_event_callback({});
+    }
+};
 
 } // namespace
 // ================================================================
@@ -163,6 +310,18 @@ int ControlLoop::run()
         !telemetry_logger.init("./logs/telemetry", "telemetry")) {
         std::cerr << "[ControlLoop] TelemetryTimelineLogger init failed, continue without telemetry CSV.\n";
     }
+
+    ControlEventCsvLogger control_event_logger;
+    if (!control_event_logger.init("./logs/control/control_events.csv")) {
+        std::cerr << "[ControlLoop] ControlEventCsvLogger init failed, continue without structured guard events.\n";
+    }
+
+    // Guard 只负责判断“为什么拒绝/为什么进入 failsafe”，真正写 CSV 放在进程边界。
+    // 这样本轮先把低频关键事件落地，不需要把刷盘逻辑塞回控制安全对象内部。
+    guard_.set_event_callback([&](const GuardEvent& event) {
+        control_event_logger.log_guard_event(event, ctrl_mgr_.active_controller_name());
+    });
+    GuardCallbackReset guard_callback_reset{guard_};
 
     std::cout << "[ControlLoop] starting v20260104-a, loop_hz=" << loop_hz
               << " Hz, active_controller=" << ctrl_mgr_.active_controller_name()

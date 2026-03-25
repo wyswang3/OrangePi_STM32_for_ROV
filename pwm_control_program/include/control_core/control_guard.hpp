@@ -3,6 +3,7 @@
 #define ROVCTRL_CONTROL_CORE_CONTROL_GUARD_HPP
 
 #include <cstdint>
+#include <functional>
 
 #include "control_core/control_intent.hpp"   // ControlIntent / ControlState / ControlReference / ControlMode
 #include "shared/msg/nav_state_view.hpp"  // 新增
@@ -70,6 +71,26 @@ struct GuardResult {
     std::uint64_t last_intent_ns = 0;
 };
 
+struct GuardEvent {
+    std::uint64_t mono_ns = 0;
+    const char* component = "control_guard";
+    const char* event = "";
+    const char* level = "info";
+    std::uint16_t fault_code = 0;
+    ControlMode mode = ControlMode::kUnknown;
+    ControlMode requested_mode = ControlMode::kNone;
+    FailsafeAction failsafe = FailsafeAction::kNone;
+    bool armed = false;
+    bool estop_latched = false;
+    bool nav_present = false;
+    bool nav_valid = false;
+    bool nav_stale = false;
+    bool nav_degraded = false;
+    const char* message = "";
+};
+
+using GuardEventCallback = std::function<void(const GuardEvent&)>;
+
 class ControlGuard {
 public:
     explicit ControlGuard(ControlGuardConfig cfg = {});
@@ -81,6 +102,7 @@ public:
                      const ControlIntent& intent);
 
     const ControlGuardConfig& config() const noexcept { return cfg_; }
+    void set_event_callback(GuardEventCallback cb);
 
     // =========================================================
     // Read-only accessors (telemetry / debug)
@@ -111,6 +133,9 @@ private:
     void clamp_teleop(ControlIntent& inout) const;
     void clamp_ref_delta(ControlIntent& inout) const;
 
+    void emit_event_(const GuardEvent& event) const;
+    bool should_emit_reject_(std::uint64_t cmd_seq, const char* reject_tag) noexcept;
+
 private:
     ControlGuardConfig cfg_{};
 
@@ -131,6 +156,13 @@ private:
     std::uint64_t motor_test_deadline_ns_{0};
     std::uint64_t motor_test_cmd_seq_{0};
     MotorTestCmd  latched_motor_test_{};
+
+    GuardEventCallback event_callback_{};
+    bool have_last_nav_gating_state_{false};
+    bool last_nav_gating_ok_{false};
+    FailsafeAction last_failsafe_action_{FailsafeAction::kNone};
+    std::uint64_t last_reject_cmd_seq_{0};
+    const char* last_reject_tag_{nullptr};
 };
 
 } // namespace rovctrl::control_core
