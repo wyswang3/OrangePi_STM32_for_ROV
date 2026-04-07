@@ -130,6 +130,12 @@ UROGCS_ROV_IP=<OrangePi_IP> PYTHONPATH=src python -m urogcs.app.tui.tui_main
 
 这是当前已经验证能看到 PWM duty 变化的最小路径。
 
+重要说明：
+
+- 上面这条最小路径默认是 dummy backend。
+- 它可以证明 `gcs_server -> pwm_control_program` 已经联动，但不能证明 STM32 已经收到 PWM。
+- 如果要走真实 STM32 输出，必须使用集成仓 supervisor 的 `REAL_PWM=1` 或 `phase0_supervisor.py ... --real-pwm`，并确认 `pwm_control_program` 实际命令行里没有 `--pwm-dummy`。
+
 ## 7. 当前仓库里最容易误解的点
 
 有几个边界必须说清楚。

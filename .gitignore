@@ -1,1 +1,19 @@
 /build/
+
+# runtime / test artifacts
+/logs/
+*.log
+*.bin
+*.tmp
+
+# python caches from helper tooling
+__pycache__/
+*.pyc
+*.pyo
+
+# local editor settings / temporary files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~

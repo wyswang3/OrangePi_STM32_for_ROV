@@ -129,6 +129,14 @@ cd /home/wys/orangepi/UnderwaterRobotSystem/OrangePi_STM32_for_ROV/build/bin
 - 计算真实的 PWM duty
 - 只打印，不驱动真实推进器
 
+如果你要确认真实 STM32 下发链，请不要只停在这条命令。
+
+至少要满足：
+
+- `pwm_control_program` 没有带 `--pwm-dummy`
+- supervisor/status 明确显示 `pwm_backend=stm32`
+- 当前联调流程已经显式放行真实 PWM
+
 ## 8. 日志与可观测性
 
 当前程序会在运行目录下生成：
