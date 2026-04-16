@@ -122,12 +122,11 @@ cmake --build build -j4
 
 ## 8. 文档入口
 
-这个目录下已有几份更细的说明：
+这个目录相关的仓级基线说明已经并入：
 
-- `docs/control_stack_integration_and_safety.md`
-- `docs/protocol_v1.md`
-- `docs/pwm_control_layer_safety_overview.md`
-- `docs/handover_guide.md`
-- `docs/test_plan_en.md`
+- `../docs/控制系统总览.md`
+- `../docs/控制安全与运行语义.md`
+- `../docs/通信协议与遥测说明.md`
+- `../docs/控制器调参与测试指南.md`
 
-如果你要做的是具体协议或安全层改动，这些文档比总 README 更直接。
+如果你要做的是协议、执行保护或 bench 回归，优先读这些基线文档，再回到本目录源码。

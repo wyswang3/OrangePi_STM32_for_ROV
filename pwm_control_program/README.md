@@ -6,6 +6,13 @@
 
 如果你只看一个目录来理解“机器人到底怎么从 GCS 指令走到 PWM 输出”，这个目录最重要。
 
+补充入口：
+
+- 仓级文档总览：`../docs/文档总览.md`
+- 控制系统总览：`../docs/控制系统总览.md`
+- 控制安全与运行语义：`../docs/控制安全与运行语义.md`
+- 通信协议与遥测说明：`../docs/通信协议与遥测说明.md`
+
 ## 1. 当前运行链路
 
 当前主线可以概括为：
@@ -103,7 +110,7 @@ GCS / local intent / nav view
 在仓库根目录构建：
 
 ```bash
-cd /home/wys/orangepi/UnderwaterRobotSystem/OrangePi_STM32_for_ROV
+cd <OrangePi_STM32_for_ROV repo root>
 cmake -S . -B build
 cmake --build build -j4
 ```
@@ -119,7 +126,7 @@ build/bin/pwm_control_program
 不接真实推进器时，推荐先跑 dummy：
 
 ```bash
-cd /home/wys/orangepi/UnderwaterRobotSystem/OrangePi_STM32_for_ROV/build/bin
+cd <OrangePi_STM32_for_ROV repo root>/build/bin
 ./pwm_control_program --no-teleop --pwm-dummy --pwm-dummy-print
 ```
 

@@ -102,7 +102,7 @@ pid:
 ```
 
 ⚠️ **危险提示**
-PID 参数调节请遵循 `docs/test/pid_test_guide.md`，禁止直接在水中大幅修改。
+PID 参数调节请遵循 `docs/pid_test_guide.md`，禁止直接在水中大幅修改。
 
 ---
 
@@ -243,10 +243,10 @@ safety:
 
 ## 6. 相关文档索引
 
-* 控制架构：`pwm_control_architecture.md`
+* 控制架构：`../../docs/控制系统总览.md`
 * 控制时序：`control_loop_sequence.svg`
 * 安全测试流程：`pwm_test_procedures.md`
-* PID 调试指南：`docs/test/pid_test_guide.md`
+* PID 调试指南：`docs/pid_test_guide.md`
 
 ---
 
