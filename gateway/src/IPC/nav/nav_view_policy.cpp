@@ -1,3 +1,13 @@
+// gateway/src/IPC/nav/nav_view_policy.cpp
+//
+// 作用：
+//   - 给 nav_viewd 定义当前 hop 的发布时间戳、age 计算和 stale/no-data 策略；
+//   - 决定什么时候发布真实导航视图，什么时候发布诊断帧。
+//
+// 实现思路：
+//   - 把 warmup、max_age、publish_when_stale 等策略集中在纯计算函数里；
+//   - 守护进程主循环只消费决策结果，避免策略分散在发布路径各处。
+
 #include "gateway/IPC/nav/nav_view_policy.hpp"
 
 #include <limits>

@@ -563,6 +563,74 @@ int test_pid_software_chain_smoke()
     return 0;
 }
 
+int test_thruster_allocator_exact_full_row_rank_mapping()
+{
+    cc::ThrusterAllocationConfig cfg{};
+    cfg.thruster_order_yaml = {"P1", "P2", "P3", "P4", "P5", "P6", "P7", "P8"};
+    cfg.active_dof = {true, true, true, false, false, true}; // Fx, Fy, Fz, Mz
+    cfg.norm_min = -1.0;
+    cfg.norm_max = 1.0;
+    cfg.thrust_model.max_forward_N = 100.0;
+    cfg.thrust_model.max_reverse_N = -100.0;
+    cfg.thrust_model.norm_min = cfg.norm_min;
+    cfg.thrust_model.norm_max = cfg.norm_max;
+
+    for (auto& row : cfg.allocation_matrix_yaml) {
+        row.fill(0.0);
+    }
+    cfg.allocation_matrix_yaml[0][0] = 1.0; // Fx -> P1
+    cfg.allocation_matrix_yaml[1][1] = 1.0; // Fy -> P2
+    cfg.allocation_matrix_yaml[2][2] = 1.0; // Fz -> P3
+    cfg.allocation_matrix_yaml[5][3] = 1.0; // Mz -> P4
+
+    cc::ThrusterAllocator allocator{};
+    TEST_CHECK(allocator.init(cfg));
+
+    cc::BodyWrench6D wrench{};
+    wrench[0] = 25.0;
+    wrench[1] = -50.0;
+    wrench[2] = 75.0;
+    wrench[5] = -100.0;
+
+    cc::ThrusterNormArray thr_cmd{};
+    TEST_CHECK(allocator.allocate(wrench, thr_cmd));
+
+    TEST_NEAR(thr_cmd[0], 0.25, 1e-6);
+    TEST_NEAR(thr_cmd[1], -0.50, 1e-6);
+    TEST_NEAR(thr_cmd[2], 0.75, 1e-6);
+    TEST_NEAR(thr_cmd[3], -1.00, 1e-6);
+    TEST_NEAR(thr_cmd[4], 0.00, 1e-6);
+    TEST_NEAR(thr_cmd[5], 0.00, 1e-6);
+    TEST_NEAR(thr_cmd[6], 0.00, 1e-6);
+    TEST_NEAR(thr_cmd[7], 0.00, 1e-6);
+    return 0;
+}
+
+int test_thruster_allocator_rejects_rank_deficient_active_rows()
+{
+    cc::ThrusterAllocationConfig cfg{};
+    cfg.thruster_order_yaml = {"P1", "P2", "P3", "P4", "P5", "P6", "P7", "P8"};
+    cfg.active_dof = {true, true, false, false, false, false}; // Fx, Fy
+    cfg.norm_min = -1.0;
+    cfg.norm_max = 1.0;
+    cfg.thrust_model.max_forward_N = 100.0;
+    cfg.thrust_model.max_reverse_N = -100.0;
+    cfg.thrust_model.norm_min = cfg.norm_min;
+    cfg.thrust_model.norm_max = cfg.norm_max;
+
+    for (auto& row : cfg.allocation_matrix_yaml) {
+        row.fill(0.0);
+    }
+    cfg.allocation_matrix_yaml[0][0] = 1.0;
+    cfg.allocation_matrix_yaml[0][1] = 2.0;
+    cfg.allocation_matrix_yaml[1][0] = 2.0;
+    cfg.allocation_matrix_yaml[1][1] = 4.0; // row1 = 2 * row0, rank deficient
+
+    cc::ThrusterAllocator allocator{};
+    TEST_CHECK(!allocator.init(cfg));
+    return 0;
+}
+
 int test_telemetry_preserves_total_nav_age_semantics()
 {
     rovctrl::io::NavStateView nav_snapshot{};
@@ -621,6 +689,10 @@ int main()
     rc = test_app_context_controller_default_overrides_modes_default();
     if (rc != 0) return rc;
     rc = test_pid_software_chain_smoke();
+    if (rc != 0) return rc;
+    rc = test_thruster_allocator_exact_full_row_rank_mapping();
+    if (rc != 0) return rc;
+    rc = test_thruster_allocator_rejects_rank_deficient_active_rows();
     if (rc != 0) return rc;
     rc = test_telemetry_preserves_total_nav_age_semantics();
     if (rc != 0) return rc;

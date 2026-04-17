@@ -1,3 +1,13 @@
+// control_core/app_context.cpp
+//
+// 作用：
+//   - 构建 pwm_control_program 的启动期运行上下文；
+//   - 负责把 YAML 配置、控制器注册、输入源和关键依赖装配成主循环可直接使用的对象。
+//
+// 实现思路：
+//   - 把配置解析和组件 wiring 尽量放在启动阶段一次完成；
+//   - 运行期 ControlLoop 只消费已经准备好的 context，避免控制 tick 内再做路径解析或控制器拼装。
+
 #include "control_core/app_context.hpp"
 
 #include <cstdlib>

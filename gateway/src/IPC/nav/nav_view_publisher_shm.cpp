@@ -1,3 +1,13 @@
+// gateway/src/IPC/nav/nav_view_publisher_shm.cpp
+//
+// 作用：
+//   - 创建并写入 NavStateView 共享内存；
+//   - 作为 gateway -> control 的导航视图发布端，固定 SHM 头和 wire 合约。
+//
+// 实现思路：
+//   - 初始化时校验/重建共享内存头，保证 magic/layout/payload 版本一致；
+//   - 发布时使用 seqlock 写法，先标记写入中，再整体拷贝 payload，最后提交稳定序号。
+
 #include "gateway/IPC/nav/nav_view_publisher_shm.hpp"
 
 #include "shared/msg/nav_state_view.hpp"

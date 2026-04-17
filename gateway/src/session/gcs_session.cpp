@@ -1,3 +1,13 @@
+// gateway/src/session/gcs_session.cpp
+//
+// 作用：
+//   - 维护 GCS UDP 会话的握手、心跳、ACK、超时和收发统计；
+//   - 作为 gateway 侧 wire protocol 与业务回调之间的会话层门面。
+//
+// 实现思路：
+//   - 所有入站报文先经过 parse/session 校验，再按消息类型分发到对应 handler；
+//   - 会话状态、peer 信息和定时 Telemetry 发送窗口统一收口在这里，避免业务层重复处理传输细节。
+
 #include "gateway/session/gcs_session.hpp"
 
 #include <chrono>

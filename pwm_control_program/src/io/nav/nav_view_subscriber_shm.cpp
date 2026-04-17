@@ -1,3 +1,13 @@
+// io/nav/nav_view_subscriber_shm.cpp
+//
+// 作用：
+//   - 作为控制侧 NavStateView 的共享内存订阅器；
+//   - 提供 lazy open、ABI 检查和 seqlock 快照读取能力。
+//
+// 实现思路：
+//   - nav_viewd 尚未启动时优先返回“暂无数据”，而不是把打开失败直接升级成不可恢复错误；
+//   - 读取时使用 seqlock 重试，尽量避免控制主循环消费到半写入的数据。
+
 #include "io/nav/nav_view_subscriber_shm.hpp"
 
 #include <atomic>

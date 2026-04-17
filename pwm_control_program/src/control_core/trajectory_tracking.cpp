@@ -1,4 +1,12 @@
 // src/control_core/trajectory_tracking.cpp
+//
+// 作用：
+//   - 管理离线路径点、按时间采样轨迹，并生成 Auto 控制可消费的参考量；
+//   - 统一输出轨迹样本和跟踪误差，减少上层控制逻辑重复处理坐标与插值细节。
+//
+// 实现思路：
+//   - 先规范轨迹点时间轴和元信息，再在运行时做线性插值；
+//   - 将 reference 生成和 error 计算集中在同一模块，保持 Auto 路径输入语义一致。
 
 #include "control_core/trajectory_tracking.hpp"
 

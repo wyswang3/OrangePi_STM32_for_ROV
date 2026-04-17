@@ -1,3 +1,13 @@
+// gateway/src/IPC/nav/nav_state_subscriber_shm.cpp
+//
+// 作用：
+//   - 订阅 nav_core 发布的 NavState 共享内存；
+//   - 为 nav_viewd/gateway 侧提供带 ABI 校验的只读快照入口。
+//
+// 实现思路：
+//   - 用 seqlock 读法避免拿到写入中的半帧数据；
+//   - 支持 lazy init，让消费端可以先启动，再等待导航进程创建 SHM。
+
 #include "gateway/IPC/nav/nav_state_subscriber_shm.hpp"
 
 #include "shared/msg/nav_state.hpp"

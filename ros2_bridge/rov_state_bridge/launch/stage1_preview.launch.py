@@ -1,3 +1,14 @@
+"""ROS2 launch entry for the stage1 read-only preview bridge.
+
+作用：
+- 在 ROS2 环境里同时拉起只读 bridge 与 advisory health monitor；
+- 把常用 SHM 源和轮询频率暴露成 launch 参数，便于现场预览和验证。
+
+实现思路：
+- launch 文件只负责节点编排和参数透传；
+- 具体 bridge/health 语义仍由各自 Python 节点内部实现，避免 launch 层承载业务逻辑。
+"""
+
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
 from launch.substitutions import LaunchConfiguration

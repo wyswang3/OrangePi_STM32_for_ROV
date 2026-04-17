@@ -1,3 +1,13 @@
+// control_core/telemetry_frame_builder.cpp
+//
+// 作用：
+//   - 把 control/nav/transport 运行态汇总成 TelemetryFrameV2；
+//   - 为 gateway 和 GCS 提供控制侧已经消费过的权威状态快照。
+//
+// 实现思路：
+//   - 在这里统一完成枚举映射、字段裁剪、健康态折叠和 last-command/event 填充；
+//   - UI 侧只消费这份聚合结果，不再根据零散局部状态自行猜测 armed/mode/nav health。
+
 #include "control_core/telemetry_frame_builder.hpp"
 
 #include "shared/msg/control_intent.hpp"

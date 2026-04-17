@@ -1,3 +1,13 @@
+// control_core/control_guard.cpp
+//
+// 作用：
+//   - 作为控制主链最终的安全裁决点；
+//   - 根据输入时效、导航可信度、arm/estop 状态和故障条件，决定实际 mode、failsafe 和 fault 输出。
+//
+// 实现思路：
+//   - 把 Auto 对导航的依赖、输入过期处理和故障码映射集中在一个 guard 模块里；
+//   - 控制器和输入层只提供状态，不各自复制安全规则，避免语义漂移。
+
 #include "control_core/control_guard.hpp"
 
 #include <algorithm>

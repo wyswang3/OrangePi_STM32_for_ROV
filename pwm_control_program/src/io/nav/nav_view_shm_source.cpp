@@ -1,3 +1,13 @@
+// io/nav/nav_view_shm_source.cpp
+//
+// 作用：
+//   - 在控制进程侧读取 NavStateView SHM；
+//   - 给 ControlGuard/ControlLoop 提供带“本地 hop age”语义的导航快照。
+//
+// 实现思路：
+//   - 先读取 gateway 发布的 wire view，再把当前进程观测到的本地年龄累加进去；
+//   - 若总 age 超出控制侧预算，就主动退化为 stale/invalid，保证控制看到的是本进程语义下的导航可信度。
+
 #include "io/nav/nav_view_shm_source.hpp"
 
 #include <chrono>

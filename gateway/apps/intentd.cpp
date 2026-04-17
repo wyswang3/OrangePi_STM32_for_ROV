@@ -1,4 +1,12 @@
 // gateway/apps/intentd.cpp
+//
+// 作用：
+//   - 在 bench/实验路径下汇聚 remote/local/auto 三路 ControlIntent；
+//   - 把仲裁后的 final intent 持续发布到最终 SHM，供后续控制链消费。
+//
+// 实现思路：
+//   - intentd 只负责定时 poll、调用 IntentArbiter 做优先级/TTL/degrade 判定，再发布结果；
+//   - 具体策略集中在 mux/arbiter 层，避免守护进程主循环里再复制一套业务规则。
 
 #include <atomic>
 #include <chrono>

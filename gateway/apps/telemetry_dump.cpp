@@ -1,3 +1,13 @@
+// gateway/apps/telemetry_dump.cpp
+//
+// 作用：
+//   - 读取控制侧发布的 TelemetryFrameV2 SHM；
+//   - 把关键运行态字段打印成人可直接查看的诊断摘要。
+//
+// 实现思路：
+//   - 保持工具只做“订阅 + 枚举转字符串 + 按固定格式输出”；
+//   - 不在这里推断控制语义，现场排障时直接以共享内存中的权威值为准。
+
 #include <atomic>
 #include <chrono>
 #include <csignal>

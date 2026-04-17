@@ -1,4 +1,12 @@
 // control_core/app_main.cpp
+//
+// 作用：
+//   - 作为 pwm_control_program 的 CLI 和进程入口；
+//   - 负责解析启动参数、安装信号处理、创建运行上下文并启动 ControlLoop。
+//
+// 实现思路：
+//   - main 只保留进程级 wiring 和错误码收口；
+//   - 具体控制依赖装配交给 app_context，循环逻辑交给 ControlLoop，避免入口文件承载业务细节。
 
 #include "control_core/app_main.hpp"
 

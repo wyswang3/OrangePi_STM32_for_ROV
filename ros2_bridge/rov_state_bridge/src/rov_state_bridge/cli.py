@@ -1,3 +1,14 @@
+"""CLI entry for the stage1 read-only ROS2 bridge.
+
+作用：
+- 解析 bridge 启动参数并选择输出 backend；
+- 组装 BridgeConfig 后启动一次性轮询或持续桥接循环。
+
+实现思路：
+- CLI 层只做参数到配置的映射与 backend 选择；
+- 真正的 SHM 读取、字段映射和发布逻辑全部交给 `bridge.py` 与 backend 模块。
+"""
+
 from __future__ import annotations
 
 import argparse

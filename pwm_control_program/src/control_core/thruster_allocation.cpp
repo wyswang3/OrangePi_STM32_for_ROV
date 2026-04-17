@@ -1,3 +1,13 @@
+// control_core/thruster_allocation.cpp
+//
+// 作用：
+//   - 把 6DOF 控制量按推进器布局和推力模型分配到 8 路推进器；
+//   - 统一处理分配矩阵、伪逆求解、推力/归一化转换和限幅。
+//
+// 实现思路：
+//   - 启动阶段根据 YAML 配置构建内部矩阵和伪逆；
+//   - 运行阶段只执行快速映射与约束裁剪，避免在控制循环里重复解析拓扑与几何关系。
+
 #include "control_core/thruster_allocation.hpp"
 
 #include <algorithm>
@@ -6,7 +16,6 @@
 #include <stdexcept>
 #include <string>
 
-#include <Eigen/SVD>
 #include <yaml-cpp/yaml.h>
 
 namespace rovctrl::control_core {
@@ -219,33 +228,21 @@ bool ThrusterAllocator::computePseudoInverse()
         A_active.row(k) = A_body_.row(dof_idx);
     }
 
-    // 2) 使用 SVD 计算 Moore-Penrose 伪逆：A_pinv = V * S_pinv * U^T
-    Eigen::JacobiSVD<Eigen::MatrixXd> svd(
-        A_active,
-        Eigen::ComputeThinU | Eigen::ComputeThinV
-    );
-
-    const auto& S = svd.singularValues();
-    const auto& U = svd.matrixU();
-    const auto& V = svd.matrixV();
-
-    const int r = static_cast<int>(S.size());
-    if (r == 0) {
-        std::cerr << "[ThrusterAllocator] SVD returned zero singular values.\n";
+    // 2) 当前 active_dim_ <= 4，且期望 A_active 具备满行秩。
+    //    在这个小矩阵场景下，直接使用：
+    //        A_pinv = A^T * (A * A^T)^-1
+    //    比引入 JacobiSVD 更直接，也能避开当前编译器/Eigen 组合下
+    //    `JacobiSVD` 触发的 -Wmaybe-uninitialized 模板误报。
+    const Eigen::MatrixXd gram = A_active * A_active.transpose();
+    Eigen::FullPivLU<Eigen::MatrixXd> gram_lu(gram);
+    if (gram_lu.rank() < m) {
+        std::cerr << "[ThrusterAllocator] allocation matrix is rank-deficient for active DOFs.\n";
         return false;
     }
 
-    Eigen::MatrixXd S_pinv = Eigen::MatrixXd::Zero(r, r);
-    const double tol = 1e-8;
-
-    for (int i = 0; i < r; ++i) {
-        if (S(i) > tol) {
-            S_pinv(i, i) = 1.0 / S(i);
-        }
-    }
-
-    // 伪逆矩阵 X = V * S_pinv * U^T，维度：n x m = 8 x active_dim_
-    Eigen::MatrixXd X = V * S_pinv * U.transpose();
+    const Eigen::MatrixXd gram_inv =
+        gram_lu.solve(Eigen::MatrixXd::Identity(m, m));
+    const Eigen::MatrixXd X = A_active.transpose() * gram_inv;
 
     // 3) 将 X 拷贝到固定大小的 A_pinv_ (8x4)，只用前 active_dim_ 列
     A_pinv_.setZero();

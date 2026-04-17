@@ -1,3 +1,14 @@
+// gateway/src/IPC/nav/nav_view_builder.cpp
+//
+// 作用：
+//   - 把导航发布侧的 NavState 规整成控制消费侧使用的 NavStateView；
+//   - 明确区分“收到一帧导航”与“这帧导航仍可用于控制”。
+//
+// 实现思路：
+//   - 先透传 valid/stale/degraded/fault 等语义字段；
+//   - 只有 upstream 明确有效且数值有限时，才暴露位置/速度/姿态等控制面 payload，
+//     否则清空 flags，避免旧运动学量被误当作当前可信导航。
+
 #include "gateway/IPC/nav/nav_view_builder.hpp"
 
 #include <cmath>
