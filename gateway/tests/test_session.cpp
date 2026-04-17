@@ -396,6 +396,47 @@ static int test_motor_test_dispatch()
     return expect_ack(*ack_opt, /*ack_seq*/11u, AckCode::OK);
 }
 
+static int test_dvl_policy_dispatch()
+{
+    using namespace comm_gcs::session;
+    using namespace rovctrl::io::gcs;
+
+    bool called = false;
+    DvlPolicyCmd seen{};
+
+    GcsSessionEvents ev{};
+    ev.on_dvl_policy = [&](const DvlPolicyCmd& cmd) {
+        called = true;
+        seen = cmd;
+        return AckCode::OK;
+    };
+
+    GcsSession sess(GcsSessionConfig{}, ev);
+    const UdpAddress from{"127.0.0.1", 50005};
+    const std::uint64_t sid = do_handshake(sess, from);
+
+    DvlPolicyCmd cmd{};
+    cmd.enable = 1;
+    cmd.submerged_confirmed = 1;
+    auto bytes = comm_gcs::codec::to_bytes_vec(cmd);
+
+    auto pkt = build_pkt(
+        MsgType::DVL_POLICY,
+        /*seq*/12,
+        sid,
+        FLAG_ACK_REQ,
+        BytesView{bytes.data(), bytes.size()}
+    );
+
+    auto outs = sess.on_packet(from, BytesView{pkt.data(), pkt.size()});
+    auto ack_opt = find_first_parsed(outs, MsgType::ACK);
+    TEST_CHECK(ack_opt.has_value());
+    TEST_CHECK(called);
+    TEST_EQ(seen.enable, 1);
+    TEST_EQ(seen.submerged_confirmed, 1);
+    return expect_ack(*ack_opt, /*ack_seq*/12u, AckCode::OK);
+}
+
 static int test_status_adapter_maps_runtime_state()
 {
     shared::msg::TelemetryFrameV2 frame{};
@@ -489,6 +530,9 @@ int main()
     if (rc != 0) return rc;
 
     rc = test_motor_test_dispatch();
+    if (rc != 0) return rc;
+
+    rc = test_dvl_policy_dispatch();
     if (rc != 0) return rc;
 
     rc = test_status_adapter_maps_runtime_state();

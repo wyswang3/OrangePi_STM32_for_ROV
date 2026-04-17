@@ -65,6 +65,7 @@ struct GcsSessionEvents final {
     std::function<void(const rovctrl::io::gcs::MotorTestCmd&)> on_motor_test;
     // ★ 新增：Arm / Disarm 事件
     std::function<void(const rovctrl::io::gcs::ArmCmd&)>     on_arm;
+    std::function<rovctrl::io::gcs::AckCode(const rovctrl::io::gcs::DvlPolicyCmd&)> on_dvl_policy;
 
     // Optional: observe handshake progression.
     std::function<void(std::uint64_t session_id, const comm_gcs::UdpAddress& peer)> on_session_established;

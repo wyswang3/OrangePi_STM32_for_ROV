@@ -49,6 +49,7 @@ enum class MsgType : std::uint8_t {
     ESTOP           = 22,
     ARM             = 23,   // ★ 新增：Arm / Disarm 命令
     MOTOR_TEST      = 24,
+    DVL_POLICY      = 25,
 
     // telemetry (ROV -> GCS)
     STATUS          = 40,
@@ -63,7 +64,8 @@ enum class AckCode : std::uint16_t {
     CRC_FAIL         = 2,
     INVALID_SESSION  = 3,
     SEQ_OLD_OR_DUP   = 4,
-    NOT_SUPPORTED    = 5
+    NOT_SUPPORTED    = 5,
+    RUNTIME_ERROR    = 6
 };
 
 // This enum exists to satisfy mapping code.
@@ -142,6 +144,13 @@ struct ArmCmd {
     std::uint8_t reserved[3] {0, 0, 0}; // 对齐 & 预留
 };
 
+struct DvlPolicyCmd final {
+    std::uint8_t enable = 0;               // 1 => enable DVL policy, 0 => disable
+    std::uint8_t submerged_confirmed = 0;  // 1 => operator confirmed the DVL is already submerged
+    std::uint8_t reserved0 = 0;
+    std::uint8_t reserved1 = 0;
+};
+
 struct SetDofCmd final {
     float dof[6]{};
 };
@@ -199,7 +208,7 @@ struct StatusTelemetry final {
     std::uint8_t  health_state        = 0; // shared::msg::HealthState
 
     std::uint8_t  command_status      = 0; // shared::msg::CommandResultCode
-    std::uint8_t  reserved0           = 0;
+    std::uint8_t  reserved0           = 0; // bit0: desired DVL policy enabled
     std::uint16_t last_fault_code     = 0; // shared::msg::FaultCode
 
     std::uint16_t command_fault_code  = 0; // shared::msg::FaultCode
@@ -256,6 +265,7 @@ static_assert(sizeof(ConnectConfirm) == 8,  "ConnectConfirm size must be 8");
 static_assert(sizeof(SetModeCmd)     == 20, "SetModeCmd size must be 20");
 static_assert(sizeof(SetDofCmd)      == 24, "SetDofCmd size must be 24");
 static_assert(sizeof(EstopCmd)       == 4,  "EstopCmd size must be 4 bytes");
+static_assert(sizeof(DvlPolicyCmd)   == 4,  "DvlPolicyCmd size must be 4 bytes");
 static_assert(sizeof(MotorTestCmd)   == 16, "MotorTestCmd size must be 16 bytes");
 static_assert(sizeof(StatusTelemetry) == 82, "StatusTelemetry size must be 82 bytes");
 
@@ -293,6 +303,7 @@ inline bool msg_type_known(std::uint8_t mt) noexcept
     case MsgType::SET_DOF_CMD:
     case MsgType::ESTOP:
     case MsgType::MOTOR_TEST:
+    case MsgType::DVL_POLICY:
     case MsgType::STATUS:
     case MsgType::ACK:
     case MsgType::ARM:      // ★ 新增：Arm / Disarm 命令

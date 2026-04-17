@@ -53,6 +53,7 @@
 #include <vector>
 #include <functional>
 #include <optional>
+#include <string>
 
 #include "gateway/intent_publisher_shm.hpp"
 #include "gateway/session/gcs_session.hpp"
@@ -111,6 +112,9 @@ struct IntentContext {
     // === ARM 状态（网关本地视角）===
     bool armed          = false;         ///< 网关认为当前 ROV 是否已解锁（初始为未解锁）
     bool arm_log_enable = false;         ///< 是否打印 ARM 状态变化日志（避免刷屏）
+
+    // === 外围操作脚本 ===
+    std::string nav_lane_manager_script; ///< 为空时，不支持 DVL policy 运行时切换
 };
 
 /**

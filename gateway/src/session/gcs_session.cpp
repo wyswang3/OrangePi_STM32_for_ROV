@@ -269,6 +269,31 @@ GcsSession::PacketVec GcsSession::handle_parsed_(const comm_gcs::UdpAddress& fro
         return out;
     }
 
+    case MsgType::DVL_POLICY: {
+        if (cfg_.require_session_for_commands && !st_.established) {
+            if (auto ack = make_ack_if_req_(h, AckCode::INVALID_SESSION)) {
+                out.emplace_back(std::move(*ack));
+            }
+            return out;
+        }
+
+        if (!comm_gcs::codec::payload_size_is(pp.payload, sizeof(DvlPolicyCmd))) {
+            if (auto ack = make_ack_if_req_(h, AckCode::BAD_FORMAT)) {
+                out.emplace_back(std::move(*ack));
+            }
+            return out;
+        }
+
+        DvlPolicyCmd cmd{};
+        std::memcpy(&cmd, pp.payload.data, sizeof(cmd));
+
+        const AckCode rc = ev_.on_dvl_policy ? ev_.on_dvl_policy(cmd) : AckCode::NOT_SUPPORTED;
+        if (auto ack = make_ack_if_req_(h, rc)) {
+            out.emplace_back(std::move(*ack));
+        }
+        return out;
+    }
+
     case MsgType::SET_MODE: {
         if (cfg_.require_session_for_commands && !st_.established) {
             if (auto ack = make_ack_if_req_(h, AckCode::INVALID_SESSION)) {
@@ -389,6 +414,7 @@ bool GcsSession::is_command_type_(std::uint8_t msg_type) noexcept
     case MsgType::SET_DOF_CMD:
     case MsgType::ESTOP:
     case MsgType::ARM:
+    case MsgType::DVL_POLICY:
     case MsgType::MOTOR_TEST:
         return true;
     default:

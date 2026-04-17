@@ -17,6 +17,7 @@
 #include <atomic>
 #include <chrono>
 #include <csignal>
+#include <fstream>
 #include <iostream>
 #include <mutex>
 #include <string>
@@ -45,6 +46,58 @@ namespace {
 std::atomic<bool> g_stop{false};
 extern "C" void on_sigint(int) { g_stop.store(true); }
 
+std::string trim_copy(std::string value)
+{
+    const auto first = value.find_first_not_of(" \t\r\n");
+    if (first == std::string::npos) {
+        return {};
+    }
+    const auto last = value.find_last_not_of(" \t\r\n");
+    return value.substr(first, last - first + 1);
+}
+
+bool read_dvl_policy_enabled_from_nav_config(const std::string& path, bool fallback = false)
+{
+    if (path.empty()) {
+        return fallback;
+    }
+
+    std::ifstream input(path);
+    if (!input.is_open()) {
+        return fallback;
+    }
+
+    bool in_dvl_section = false;
+    std::string line;
+    while (std::getline(input, line)) {
+        const auto comment_pos = line.find('#');
+        if (comment_pos != std::string::npos) {
+            line = line.substr(0, comment_pos);
+        }
+
+        const auto trimmed = trim_copy(line);
+        if (trimmed.empty()) {
+            continue;
+        }
+
+        if (!line.empty() && line[0] != ' ' && line[0] != '\t' && trimmed.back() == ':') {
+            in_dvl_section = (trimmed == "dvl:");
+            continue;
+        }
+
+        if (!in_dvl_section) {
+            continue;
+        }
+
+        if (trimmed.rfind("enable:", 0) == 0) {
+            const auto value = trim_copy(trimmed.substr(std::string("enable:").size()));
+            return value == "true" || value == "True" || value == "1";
+        }
+    }
+
+    return fallback;
+}
+
 } // namespace
 
 int main(int argc, char** argv)
@@ -57,6 +110,8 @@ int main(int argc, char** argv)
     // shm config
     std::string intent_shm    = "/rovctrl_gcs_intent_v1";
     int         intent_ttl_ms = 200;
+    std::string nav_config_path;
+    std::string nav_lane_manager_script;
 
     // debug switches
     bool dbg_layout           = false;
@@ -77,6 +132,10 @@ int main(int argc, char** argv)
             intent_shm = argv[++i];
         } else if (a == "--intent-ttl-ms" && i + 1 < argc) {
             intent_ttl_ms = std::stoi(argv[++i]);
+        } else if (a == "--nav-config-path" && i + 1 < argc) {
+            nav_config_path = argv[++i];
+        } else if (a == "--nav-lane-manager-script" && i + 1 < argc) {
+            nav_lane_manager_script = argv[++i];
         } else if (a == "--dbg-layout") {
             dbg_layout = true;
         } else if (a == "--dbg-shm") {
@@ -94,6 +153,8 @@ int main(int argc, char** argv)
               "  --telem-hz <hz>\n"
               "  --intent-shm <name>\n"
               "  --intent-ttl-ms <ms>\n"
+              "  --nav-config-path <path>\n"
+              "  --nav-lane-manager-script <path>\n"
               "  --dbg-layout\n"
               "  --dbg-shm\n"
               "  --dbg-shm-every-ms <ms>\n"
@@ -109,6 +170,12 @@ int main(int argc, char** argv)
               << " telem_hz=" << telem_hz << "\n";
     std::cout << "[gcs_server] intent_shm=" << intent_shm
               << " intent_ttl_ms=" << intent_ttl_ms << "\n";
+    if (!nav_config_path.empty()) {
+        std::cout << "[gcs_server] nav_config_path=" << nav_config_path << "\n";
+    }
+    if (!nav_lane_manager_script.empty()) {
+        std::cout << "[gcs_server] nav_lane_manager_script=" << nav_lane_manager_script << "\n";
+    }
 
     // ---------------- IntentPublisherShm 初始化 ----------------
     comm_gcs::IntentPublisherShm pub;
@@ -168,6 +235,7 @@ int main(int argc, char** argv)
         .intent_ttl_ms = intent_ttl_ms,
         .armed         = false,
         .arm_log_enable = true,   // 或按你自己的习惯
+        .nav_lane_manager_script = nav_lane_manager_script,
     };
     std::cout << "[DBG] dbg_shm_hex=" << (dbg_shm_hex ? 1 : 0) << "\n";
 
@@ -249,6 +317,10 @@ int main(int argc, char** argv)
                     stw.estop = sess_state.estop ? 1 : 0;
                     stw.mode = static_cast<std::uint8_t>(rovctrl::io::gcs::WireControlMode::Unknown);
                     stw.t_ns = comm_gcs::codec::now_steady_ns();
+                }
+
+                if (read_dvl_policy_enabled_from_nav_config(nav_config_path, false)) {
+                    stw.reserved0 |= 0x01u;
                 }
 
                 pkt_opt = sess.tick_status(stw);

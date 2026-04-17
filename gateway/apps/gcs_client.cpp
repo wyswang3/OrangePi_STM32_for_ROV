@@ -16,6 +16,7 @@
 
 #include "gateway/apps/gcs_client.hpp"
 
+#include <cstdlib>
 #include <cstddef>
 #include <cstdio>
 #include <cstring>
@@ -32,6 +33,7 @@ using rovctrl::io::gcs::WireControlMode;
 
 using rovctrl::io::gcs::EstopCmd;
 using rovctrl::io::gcs::ArmCmd;
+using rovctrl::io::gcs::DvlPolicyCmd;
 using rovctrl::io::gcs::SetModeCmd;
 using rovctrl::io::gcs::SetDofCmd;
 using rovctrl::io::gcs::MotorTestCmd;
@@ -238,6 +240,32 @@ static ControlIntent make_motor_test_intent(const MotorTestCmd& cmd, int intent_
     return w;
 }
 
+static AckCode apply_dvl_policy_script(const std::string& script_path,
+                                       const DvlPolicyCmd& cmd) noexcept
+{
+    if (script_path.empty()) {
+        std::cerr << "[DVL_POLICY] nav_lane_manager_script is not configured\n";
+        return AckCode::NOT_SUPPORTED;
+    }
+
+    if (cmd.enable != 0 && cmd.submerged_confirmed == 0) {
+        std::cerr << "[DVL_POLICY] rejected: submerged confirmation missing while enabling DVL\n";
+        return AckCode::BAD_FORMAT;
+    }
+
+    const std::string command =
+        "/usr/bin/python3 \"" + script_path + "\" apply-dvl --enable " +
+        std::to_string(int(cmd.enable != 0));
+
+    std::cout << "[DVL_POLICY] exec: " << command << "\n";
+    const int rc = std::system(command.c_str());
+    if (rc != 0) {
+        std::cerr << "[DVL_POLICY] helper failed rc=" << rc << "\n";
+        return AckCode::RUNTIME_ERROR;
+    }
+    return AckCode::OK;
+}
+
 } // namespace
 
 // =============================
@@ -382,6 +410,13 @@ void attach_default_events(comm_gcs::session::GcsSessionEvents& sev,
 
         (void)pub.publish(w);
         // maybe_dump("[SHM_HEX][ARM]");
+    };
+
+    sev.on_dvl_policy = [&](const DvlPolicyCmd& cmd) -> AckCode {
+        std::cout << "[DVL_POLICY] enable=" << int(cmd.enable)
+                  << " submerged_confirmed=" << int(cmd.submerged_confirmed)
+                  << "\n";
+        return apply_dvl_policy_script(ictx.nav_lane_manager_script, cmd);
     };
 
     // 模式切换（不再隐含 ARM 语义）
